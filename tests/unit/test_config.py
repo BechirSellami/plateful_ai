@@ -5,7 +5,12 @@ from plateful.core.config import Settings
 
 @pytest.mark.unit
 class TestSettings:
-    def test_defaults(self) -> None:
+    def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Clear env vars that CI sets so we test actual defaults
+        monkeypatch.delenv("APP_ENV", raising=False)
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
         s = Settings(
             _env_file=None,  # type: ignore[call-arg]
         )
