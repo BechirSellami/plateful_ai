@@ -2,6 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -89,8 +90,8 @@ class Event(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     event_type: Mapped[EventType] = mapped_column(Enum(EventType), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # type: ignore[assignment]
-    context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # type: ignore[assignment]
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class Ingredient(Base):
@@ -112,8 +113,8 @@ class MenuItem(Base):
     category: Mapped[str] = mapped_column(String(100), nullable=False)
     cuisine: Mapped[str] = mapped_column(String(100), nullable=False)
     calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    available_from: Mapped[datetime | None] = mapped_column(Time, nullable=True)  # type: ignore[assignment]
-    available_to: Mapped[datetime | None] = mapped_column(Time, nullable=True)  # type: ignore[assignment]
+    available_from: Mapped[datetime | None] = mapped_column(Time, nullable=True)
+    available_to: Mapped[datetime | None] = mapped_column(Time, nullable=True)
     vendor_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -175,7 +176,7 @@ class Policy(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     department_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     rule_type: Mapped[PolicyRuleType] = mapped_column(Enum(PolicyRuleType), nullable=False)
-    params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # type: ignore[assignment]
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
@@ -190,7 +191,7 @@ class AuditTrail(Base):
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     decision_type: Mapped[DecisionType] = mapped_column(Enum(DecisionType), nullable=False)
     agent: Mapped[str] = mapped_column(String(100), nullable=False)
-    input_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # type: ignore[assignment]
-    output_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # type: ignore[assignment]
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    output_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome: Mapped[AuditOutcome] = mapped_column(Enum(AuditOutcome), nullable=False)

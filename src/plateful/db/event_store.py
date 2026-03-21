@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +14,8 @@ async def log_event(
     user_id: str,
     session_id: str,
     event_type: EventType,
-    payload: dict | None = None,
-    context: dict | None = None,
+    payload: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> Event:
     event = Event(
         id=uuid.uuid4(),

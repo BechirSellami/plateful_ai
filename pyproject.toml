@@ -70,8 +70,9 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["mem0ai.*", "testcontainers.*"]
+module = ["mem0", "mem0.*", "mem0ai.*", "testcontainers.*"]
 ignore_missing_imports = true
+follow_untyped_imports = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
