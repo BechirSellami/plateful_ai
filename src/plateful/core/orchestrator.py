@@ -111,7 +111,7 @@ async def run_workflow(
 
 def get_steps_from(flow_def: dict[str, Any], *, start_after: str) -> list[dict[str, Any]]:
     """Get remaining steps after a given step name (for resume after approval)."""
-    steps = flow_def["steps"]
+    steps: list[dict[str, Any]] = flow_def["steps"]
     for i, step in enumerate(steps):
         if step["name"] == start_after:
             return steps[i + 1 :]

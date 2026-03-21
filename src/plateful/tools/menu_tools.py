@@ -3,7 +3,7 @@ from typing import Any
 
 
 async def get_menu(
-    filters: dict | None = None,
+    filters: dict[str, Any] | None = None,
     menu_data: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch available menu items, optionally filtered by category, cuisine, budget, or time."""
