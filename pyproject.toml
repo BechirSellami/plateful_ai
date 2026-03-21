@@ -31,6 +31,9 @@ dev = [
     "testcontainers[postgres]>=4.0.0",
 ]
 
+[project.scripts]
+plateful = "plateful.cli:main"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
@@ -58,6 +61,9 @@ select = [
     "ASYNC", # flake8-async
 ]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/plateful/cli.py" = ["T20", "ASYNC250"]  # CLI legitimately uses print() and blocking input()
 
 [tool.ruff.lint.isort]
 known-first-party = ["plateful"]

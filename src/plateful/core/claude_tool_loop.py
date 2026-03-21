@@ -27,7 +27,9 @@ def to_claude_tool_schema(func: Callable[..., Any]) -> dict[str, Any]:
             prop = {"type": "number"}
         elif hint is bool:
             prop = {"type": "boolean"}
-        elif hint is list or (hasattr(hint, "__origin__") and getattr(hint, "__origin__", None) is list):
+        elif hint is list or (
+            hasattr(hint, "__origin__") and getattr(hint, "__origin__", None) is list
+        ):
             prop = {"type": "array", "items": {"type": "string"}}
         elif hint is dict:
             prop = {"type": "object"}
