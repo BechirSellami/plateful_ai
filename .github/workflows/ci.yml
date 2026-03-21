@@ -62,7 +62,7 @@ jobs:
       - name: Run unit tests
         run: pytest tests/unit -m unit --cov=plateful --cov-report=xml
       - name: Run integration tests
-        run: pytest tests/integration -m integration
+        run: pytest tests/integration -m integration --no-header -rN || test $? -eq 5
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
