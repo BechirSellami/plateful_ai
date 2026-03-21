@@ -1,0 +1,85 @@
+[project]
+name = "plateful-ai"
+version = "0.1.0"
+description = "Agentic catering assistant for employee meal ordering and planning"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "anthropic>=0.52.0",
+    "mem0ai>=0.1.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "websockets>=14.0",
+    "structlog>=24.0.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "pre-commit>=4.0.0",
+    "factory-boy>=3.3.0",
+    "testcontainers[postgres]>=4.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "T20",   # flake8-print
+    "RUF",   # ruff-specific
+    "ASYNC", # flake8-async
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["plateful"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["mem0ai.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (no external dependencies)",
+    "integration: Integration tests (requires Postgres)",
+    "eval: Evaluation tests (may use LLM, run separately)",
+]
+addopts = "-v --tb=short"
+filterwarnings = ["ignore::DeprecationWarning"]
