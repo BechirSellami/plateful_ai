@@ -2,11 +2,14 @@
 
 from typing import Any
 
+import anthropic
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from plateful.agents.intent import IntentAgent
 from plateful.agents.menu import MenuAgent
+from plateful.agents.recommendation import RecommendationAgent
+from plateful.core.config import settings
 from plateful.core.orchestrator import run_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
@@ -24,15 +27,22 @@ class ChatResponse(BaseModel):
     intent: str | None
     constraints: dict[str, Any]
     menu_items: list[dict[str, Any]]
+    recommendations: list[dict[str, Any]]
+    recommendation_text: str | None
     user_profile: dict[str, Any]
 
 
 def _build_agent_registry() -> dict[str, Any]:
-    """Build agent registry with available agents (no external deps needed)."""
+    """Build agent registry with available agents."""
+    # Create Claude client if API key is configured
+    claude_client = None
+    if settings.anthropic_api_key:
+        claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
     return {
         "orchestrator": IntentAgent(),
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
-        # Agents requiring external services are stubbed for now
+        "recommendation": RecommendationAgent(anthropic_client=claude_client),
     }
 
 
@@ -45,8 +55,7 @@ async def health() -> dict[str, str]:
 async def chat(request: ChatRequest) -> ChatResponse:
     """Process a user message through the orchestrator pipeline.
 
-    Runs intent classification and menu retrieval.
-    Memory and recommendation agents are skipped when Mem0/Claude keys aren't configured.
+    Runs intent classification, menu retrieval, and recommendation.
     """
     state = WorkflowState(
         user_id=request.user_id,
@@ -56,11 +65,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     registry = _build_agent_registry()
 
-    # Run only the steps we have agents for
     flow = {
         "steps": [
             {"name": "understand", "agent": "orchestrator"},
             {"name": "retrieve", "agent": "menu"},
+            {"name": "recommend", "agent": "recommendation"},
         ]
     }
 
@@ -70,6 +79,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         intent=state.intent,
         constraints=state.constraints,
         menu_items=state.menu_items,
+        recommendations=state.recommendations,
+        recommendation_text=state.last_result if isinstance(state.last_result, str) else None,
         user_profile=state.user_profile,
     )
 
