@@ -1,9 +1,12 @@
 """FastAPI application entry point."""
 
+from pathlib import Path
 from typing import Any
 
 import anthropic
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from mem0 import MemoryClient
 from pydantic import BaseModel
 
@@ -20,6 +23,11 @@ from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
 
 app = FastAPI(title="Plateful AI", description="Catering Agent API", version="0.1.0")
+
+# Static files (Chat UI)
+_STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 class ChatRequest(BaseModel):
@@ -139,3 +147,20 @@ async def delete_memory(user_id: str, memory_id: str) -> dict[str, str]:
     client = _require_mem0_client()
     client.delete(memory_id=memory_id)
     return {"status": "deleted", "memory_id": memory_id}
+
+
+# --- WebSocket + UI ----------------------------------------------------------
+
+from plateful.api.ws import websocket_chat  # noqa: E402
+
+
+@app.websocket("/ws/chat")
+async def ws_chat_endpoint(ws: WebSocket) -> None:
+    registry = _build_agent_registry()
+    await websocket_chat(ws, registry)
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    """Serve the Chat UI."""
+    return FileResponse(str(_STATIC_DIR / "index.html"))

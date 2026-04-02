@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from typing import Any
 
 import structlog
@@ -95,15 +96,17 @@ async def run_workflow(
         if step.get("post_check"):
             run_safety_check(step["post_check"], state)
 
-        # Audit
+        # Audit (supports both sync and async callbacks)
         if audit_fn:
-            audit_fn(
+            result = audit_fn(
                 trace_id=state.trace_id,
                 step=step_name,
                 agent=agent_name,
                 snapshot=state.snapshot(),
                 output=state.last_result,
             )
+            if inspect.isawaitable(result):
+                await result
 
         logger.info("step_complete", step=step_name, agent=agent_name, trace_id=state.trace_id)
 
