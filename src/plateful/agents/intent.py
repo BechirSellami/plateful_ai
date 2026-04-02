@@ -31,6 +31,16 @@ Analyze the user's message and extract:
    - cuisine (string, e.g. "thai", "italian", "mexican", "japanese", "indian", "chinese", "mediterranean")
    - meal_type (string, e.g. "breakfast", "lunch", "dinner", "snack")
 
+Intent classification rules:
+- order_meal: the user wants to ORDER or EAT a specific food NOW. Examples: "I want chicken today", "Get me a salad", "Order lunch", "I'd like the pasta".
+- get_recommendation: the user wants SUGGESTIONS but hasn't decided yet. Examples: "What should I eat?", "Recommend something healthy", "What's good today?".
+- declare_preference: the user is stating a GENERAL preference, allergy, or restriction — NOT ordering. Examples: "I'm vegetarian", "I'm allergic to peanuts", "I prefer spicy food", "I don't eat pork".
+- create_mealplan: the user wants to plan meals for multiple days. Examples: "Plan my meals for the week".
+- check_order_status: the user is asking about an existing order. Examples: "Where is my order?", "What's the status?".
+- ask_question: the user is asking about the menu or service. Examples: "What's on the menu?", "How does this work?".
+
+Key distinction: if the user mentions wanting to EAT or HAVE something specific (a food item), that is order_meal, NOT declare_preference. declare_preference is only for general dietary rules or restrictions.
+
 Respond ONLY with valid JSON, no markdown or explanation:
 {"intent": "...", "constraints": {...}}
 """
