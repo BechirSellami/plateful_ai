@@ -104,6 +104,56 @@ class TestLearningAgent:
         call_kwargs = client.add.call_args
         assert call_kwargs.kwargs["user_id"] == "emp_123"
 
+    async def test_learns_from_preference_declaration(self) -> None:
+        client = _make_client()
+        agent = LearningAgent(client=client)
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            intent="declare_preference",
+            messages=[{"role": "user", "content": "I prefer spicy food"}],
+        )
+
+        result = await agent.run(state)
+
+        assert result.last_result["status"] == "learned"
+        assert "I prefer spicy food" in result.last_result["summary"]
+        client.add.assert_called_once()
+
+    async def test_learns_preference_with_constraints(self) -> None:
+        client = _make_client()
+        agent = LearningAgent(client=client)
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            intent="declare_preference",
+            constraints={"dietary": "vegan", "cuisine": "thai"},
+            messages=[{"role": "user", "content": "I'm vegan and love thai food"}],
+        )
+
+        result = await agent.run(state)
+
+        assert result.last_result["status"] == "learned"
+        assert result.last_result["events_processed"] >= 2
+        summary = result.last_result["summary"]
+        assert "vegan" in summary.lower()
+        assert "thai" in summary.lower()
+
+    async def test_skips_non_preference_intent_without_order(self) -> None:
+        client = _make_client()
+        agent = LearningAgent(client=client)
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            intent="get_recommendation",
+            messages=[{"role": "user", "content": "What do you suggest?"}],
+        )
+
+        result = await agent.run(state)
+
+        assert result.last_result["status"] == "skipped"
+        client.add.assert_not_called()
+
     async def test_multiple_items_in_order(self) -> None:
         client = _make_client()
         agent = LearningAgent(client=client)

@@ -74,6 +74,31 @@ class LearningAgent:
         """
         events: list[dict[str, Any]] = []
 
+        # Preference / constraint declarations from the conversation
+        if state.intent == "declare_preference":
+            user_message = ""
+            if state.messages:
+                user_message = state.messages[-1].get("content", "")
+            if user_message:
+                events.append(
+                    {
+                        "event_type": "preference_declared",
+                        "payload": {"message": user_message},
+                    }
+                )
+
+            # Also capture any extracted constraints (dietary, cuisine, etc.)
+            for key in ("dietary", "cuisine", "budget"):
+                if key in state.constraints:
+                    events.append(
+                        {
+                            "event_type": "allergy_declared"
+                            if key == "dietary"
+                            else "preference_declared",
+                            "payload": {key: state.constraints[key]},
+                        }
+                    )
+
         # Order placed
         if state.order and state.order.get("status") == "submitted":
             for item in state.order.get("items", []):
