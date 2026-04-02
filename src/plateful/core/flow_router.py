@@ -36,6 +36,10 @@ INTENT_FLOWS: dict[str, list[dict[str, Any]]] = {
         STEP_ENRICH,
         STEP_RETRIEVE,
         STEP_RECOMMEND,
+    ],
+    "confirm_order": [
+        STEP_ENRICH,
+        STEP_RETRIEVE,
         STEP_EXECUTE,
         STEP_LEARN,
     ],

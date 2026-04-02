@@ -25,18 +25,28 @@ class TestGetFlowForIntent:
         names = [s["name"] for s in flow["steps"]]
         assert names == ["understand", "enrich", "retrieve", "recommend"]
 
-    def test_order_meal_includes_execute_and_learn(self) -> None:
+    def test_order_meal_recommends_without_execute(self) -> None:
         flow = get_flow_for_intent(
             "order_meal",
             {"orchestrator", "memory", "menu", "recommendation", "execution", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
-        assert names == ["understand", "enrich", "retrieve", "recommend", "execute", "learn"]
+        assert names == ["understand", "enrich", "retrieve", "recommend"]
+        assert "execute" not in names
 
-    def test_order_meal_without_execution_agent(self) -> None:
+    def test_confirm_order_executes_and_learns(self) -> None:
         flow = get_flow_for_intent(
-            "order_meal",
-            {"orchestrator", "memory", "menu", "recommendation", "learning"},
+            "confirm_order",
+            {"orchestrator", "memory", "menu", "execution", "learning"},
+        )
+        names = [s["name"] for s in flow["steps"]]
+        assert names == ["understand", "enrich", "retrieve", "execute", "learn"]
+        assert "recommend" not in names
+
+    def test_confirm_order_without_execution_agent(self) -> None:
+        flow = get_flow_for_intent(
+            "confirm_order",
+            {"orchestrator", "memory", "menu", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
         assert "execute" not in names
