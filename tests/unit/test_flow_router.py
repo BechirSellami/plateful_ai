@@ -40,7 +40,9 @@ class TestGetFlowForIntent:
             {"orchestrator", "memory", "menu", "execution", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
-        assert names == ["understand", "enrich", "retrieve", "execute", "learn"]
+        assert names == ["understand", "execute", "learn"]
+        assert "enrich" not in names
+        assert "retrieve" not in names
         assert "recommend" not in names
 
     def test_confirm_order_without_execution_agent(self) -> None:
@@ -49,8 +51,8 @@ class TestGetFlowForIntent:
             {"orchestrator", "memory", "menu", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
+        assert names == ["understand", "learn"]
         assert "execute" not in names
-        assert "learn" in names
 
     def test_unknown_intent_uses_default_flow(self) -> None:
         flow = get_flow_for_intent(
