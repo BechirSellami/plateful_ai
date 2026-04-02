@@ -18,9 +18,14 @@ from plateful.tools.recommendation_tools import format_recommendations_prompt, r
 logger = structlog.get_logger()
 
 RECOMMENDATION_SYSTEM_PROMPT = """You are the Recommendation Agent for a corporate catering service.
-Your job is to suggest the best meal options for the employee based on their profile and constraints.
+Your job is to suggest the best meal options for the employee.
 
 Rules:
+- The user's CURRENT REQUEST is the top priority. If they ask for specific foods \
+(e.g. "pasta", "sandwich", "salad"), your recommendations MUST prioritise items \
+that match what they asked for.
+- Stored preferences and past orders are secondary context — use them to break ties \
+or add colour, but NEVER override what the user explicitly asked for.
 - Always recommend exactly 3 items (or fewer if less are available)
 - Explain briefly why each item is a good match
 - Be concise, warm, and helpful
@@ -52,15 +57,20 @@ class RecommendationAgent:
             logger.info("recommendation_agent_skip", reason="no_items", trace_id=state.trace_id)
             return state
 
-        # Stage 1: Deterministic scoring
-        ranked = rank_items(items, profile)
+        # Extract the user's current message for context
+        user_message = ""
+        if state.messages:
+            user_message = state.messages[-1].get("content", "")
+
+        # Stage 1: Deterministic scoring (current request outweighs stored prefs)
+        ranked = rank_items(items, profile, user_message=user_message)
         top_items = ranked[:5]  # send top 5 to LLM for final selection
 
         # Stage 2: LLM recommendation (if client available)
         recommendation_text = None
         if self._client and settings.anthropic_api_key:
             recommendation_text = await self._generate_llm_recommendation(
-                top_items, profile, constraints
+                top_items, profile, constraints, user_message=user_message
             )
 
         # If no LLM, use deterministic fallback
@@ -86,10 +96,14 @@ class RecommendationAgent:
         items: list[dict[str, Any]],
         profile: dict[str, Any],
         constraints: dict[str, Any],
+        *,
+        user_message: str = "",
     ) -> str | None:
         """Use Claude to generate a natural-language recommendation."""
         try:
-            prompt = format_recommendations_prompt(items, profile, constraints)
+            prompt = format_recommendations_prompt(
+                items, profile, constraints, user_message=user_message
+            )
 
             response = await self._client.messages.create(  # type: ignore[union-attr]
                 model="claude-sonnet-4-20250514",

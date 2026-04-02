@@ -6,10 +6,15 @@ from typing import Any
 def rank_items(
     items: list[dict[str, Any]],
     profile: dict[str, Any],
+    *,
+    user_message: str = "",
 ) -> list[dict[str, Any]]:
     """Score and rank menu items by preference match.
 
     Uses a simple scoring heuristic based on user profile signals.
+    The user's *current request* (``user_message``) is given the
+    highest weight so that explicit asks always outrank stored prefs.
+
     Returns items sorted by score (highest first) with score attached.
     """
     scored = []
@@ -18,21 +23,62 @@ def rank_items(
     disliked = [d.lower() for d in profile.get("disliked_items", [])]
     budget_pref = profile.get("budget_preference", "")
 
+    # Extract meaningful keywords from the current request (highest priority)
+    _stop_words = {
+        "i",
+        "me",
+        "my",
+        "want",
+        "would",
+        "like",
+        "to",
+        "a",
+        "an",
+        "the",
+        "or",
+        "and",
+        "some",
+        "today",
+        "please",
+        "get",
+        "have",
+        "for",
+        "with",
+        "of",
+        "in",
+        "on",
+        "it",
+        "is",
+        "be",
+        "do",
+    }
+    request_words = {w for w in user_message.lower().split() if len(w) > 2 and w not in _stop_words}
+
     for item in items:
         score = 50.0  # base score
 
+        item_text = (
+            f"{item.get('name', '')} {item.get('description', '')} "
+            f"{item.get('cuisine', '')} {item.get('category', '')}"
+        ).lower()
+
+        # --- Current request match (strongest signal) ---
+        for word in request_words:
+            if word in item_text:
+                score += 25.0
+
+        # --- Stored preference signals (secondary) ---
+
         # Cuisine match bonus
         if item.get("cuisine", "").lower() in favorite_cuisines:
-            score += 20.0
+            score += 10.0
 
         # Preference keyword matching
-        item_text = f"{item.get('name', '')} {item.get('description', '')} {item.get('cuisine', '')} {item.get('category', '')}".lower()
         for pref in preferences:
-            # Check if any keyword from the preference appears in item text
             pref_words = pref.split()
             for word in pref_words:
                 if len(word) > 3 and word in item_text:
-                    score += 10.0
+                    score += 5.0
                     break
 
         # Penalize disliked items
@@ -65,6 +111,8 @@ def format_recommendations_prompt(
     items: list[dict[str, Any]],
     profile: dict[str, Any],
     constraints: dict[str, Any],
+    *,
+    user_message: str = "",
 ) -> str:
     """Format menu items and profile into a prompt for the LLM to generate recommendations."""
     items_text = "\n".join(
@@ -74,9 +122,13 @@ def format_recommendations_prompt(
         for item in items
     )
 
+    request_text = ""
+    if user_message:
+        request_text = f'\nUser\'s current request: "{user_message}"'
+
     profile_text = ""
     if profile.get("preferences"):
-        profile_text += f"\nPreferences: {', '.join(profile['preferences'])}"
+        profile_text += f"\nStored preferences: {', '.join(profile['preferences'])}"
     if profile.get("dietary_restrictions"):
         profile_text += f"\nDietary restrictions: {', '.join(profile['dietary_restrictions'])}"
     if profile.get("allergies"):
@@ -91,8 +143,10 @@ def format_recommendations_prompt(
 
     return f"""Available items (pre-filtered and scored):
 {items_text}
-
-User profile:{profile_text or " No profile data yet"}
+{request_text}
+User profile (stored preferences — secondary to current request):{profile_text or " No profile data yet"}
 {constraints_text}
 
-Pick the top 3 items and explain briefly why each is a good match. Be concise and friendly."""
+Prioritise items that match the user's current request. Use stored preferences \
+only as tie-breakers or extra context. Pick the top 3 items and explain briefly \
+why each is a good match. Be concise and friendly."""
