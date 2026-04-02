@@ -5,6 +5,7 @@ import json
 
 import anthropic
 
+from plateful.agents.execution import ExecutionAgent
 from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
@@ -12,27 +13,9 @@ from plateful.agents.menu import MenuAgent
 from plateful.agents.recommendation import RecommendationAgent
 from plateful.core.config import settings
 from plateful.core.mem0_client import get_mem0_client
-from plateful.core.orchestrator import run_workflow
+from plateful.core.orchestrator import run_adaptive_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
-
-
-def _build_flow(registry: dict) -> dict:  # type: ignore[type-arg]
-    """Build the workflow flow definition, including memory step if available."""
-    steps: list[dict[str, str]] = [
-        {"name": "understand", "agent": "orchestrator"},
-    ]
-    if "memory" in registry:
-        steps.append({"name": "enrich", "agent": "memory"})
-    steps.extend(
-        [
-            {"name": "retrieve", "agent": "menu"},
-            {"name": "recommend", "agent": "recommendation"},
-        ]
-    )
-    if "learning" in registry:
-        steps.append({"name": "learn", "agent": "learning"})
-    return {"steps": steps}
 
 
 def _build_registry() -> dict:  # type: ignore[type-arg]
@@ -49,6 +32,7 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
         "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
+        "execution": ExecutionAgent(),
     }
     if settings.mem0_api_key:
         mem0_client = get_mem0_client()
@@ -62,7 +46,6 @@ async def chat_loop() -> None:
     user_id = "emp_demo"
     session_id = "sess_demo"
     registry = _build_registry()
-    flow = _build_flow(registry)
 
     print("=" * 60)
     print("  Plateful AI — Catering Agent")
@@ -101,16 +84,35 @@ async def chat_loop() -> None:
             messages=[{"role": "user", "content": message}],
         )
 
-        state = await run_workflow(flow, state, registry)
+        state = await run_adaptive_workflow(state, registry)
 
         print(f"\n  Intent: {state.intent}")
         if state.constraints:
             print(f"  Constraints: {json.dumps(state.constraints)}")
-        print(f"  Filtered items: {len(state.menu_items)}")
+        if state.menu_items:
+            print(f"  Filtered items: {len(state.menu_items)}")
 
         # Show recommendation
-        if state.last_result and isinstance(state.last_result, str):
-            print(f"\n{state.last_result}")
+        if state.recommendation_text:
+            print(f"\n{state.recommendation_text}")
+
+        # Show order confirmation
+        if state.order:
+            order = state.order
+            status = order.get("status", "unknown")
+            order_id = order.get("order_id", "")
+            items = order.get("items", [])
+            item_names = ", ".join(i.get("name", "?") for i in items)
+            total = order.get("total_usd", 0)
+            if status == "submitted":
+                print(f"\n  Order placed! #{order_id}: {item_names} (${total:.2f})")
+            elif status == "pending_approval":
+                print(f"\n  Order #{order_id} is pending approval: {item_names}")
+            elif status == "blocked":
+                print(f"\n  Order blocked: {order.get('reason', 'policy violation')}")
+
+        if state.intent == "declare_preference" and not state.recommendation_text:
+            print("\n  Got it, I'll remember that!")
         print()
 
 

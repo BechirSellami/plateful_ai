@@ -7,6 +7,7 @@ from plateful.core.orchestrator import (
     evaluate_condition,
     get_steps_from,
     register_safety_check,
+    run_adaptive_workflow,
     run_workflow,
 )
 from plateful.core.workflow import WorkflowState
@@ -150,3 +151,106 @@ class TestRunWorkflow:
         await run_workflow(flow, state, {"agent1": agent})
 
         check_fn.assert_called_once_with(state)
+
+
+@pytest.mark.unit
+class TestRunAdaptiveWorkflow:
+    async def test_preference_only_runs_understand_and_learn(self) -> None:
+        """declare_preference should skip menu and recommend."""
+        intent_agent = AsyncMock()
+        learning_agent = AsyncMock()
+        menu_agent = AsyncMock()
+        recommend_agent = AsyncMock()
+
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            messages=[{"role": "user", "content": "I like spicy food"}],
+        )
+
+        # Intent agent sets intent to declare_preference
+        async def classify(s: WorkflowState) -> WorkflowState:
+            s.intent = "declare_preference"
+            return s
+
+        intent_agent.run = AsyncMock(side_effect=classify)
+        learning_agent.run = AsyncMock(return_value=state)
+
+        registry = {
+            "orchestrator": intent_agent,
+            "menu": menu_agent,
+            "recommendation": recommend_agent,
+            "learning": learning_agent,
+        }
+
+        result = await run_adaptive_workflow(state, registry)
+
+        intent_agent.run.assert_awaited_once()
+        learning_agent.run.assert_awaited_once()
+        menu_agent.run.assert_not_awaited()
+        recommend_agent.run.assert_not_awaited()
+        assert result.intent == "declare_preference"
+
+    async def test_recommendation_runs_full_pipeline(self) -> None:
+        """get_recommendation should run enrich, retrieve, recommend."""
+        intent_agent = AsyncMock()
+        memory_agent = AsyncMock()
+        menu_agent = AsyncMock()
+        recommend_agent = AsyncMock()
+
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            messages=[{"role": "user", "content": "What should I eat?"}],
+        )
+
+        async def classify(s: WorkflowState) -> WorkflowState:
+            s.intent = "get_recommendation"
+            return s
+
+        intent_agent.run = AsyncMock(side_effect=classify)
+        memory_agent.run = AsyncMock(return_value=state)
+        menu_agent.run = AsyncMock(return_value=state)
+        recommend_agent.run = AsyncMock(return_value=state)
+
+        registry = {
+            "orchestrator": intent_agent,
+            "memory": memory_agent,
+            "menu": menu_agent,
+            "recommendation": recommend_agent,
+        }
+
+        await run_adaptive_workflow(state, registry)
+
+        intent_agent.run.assert_awaited_once()
+        memory_agent.run.assert_awaited_once()
+        menu_agent.run.assert_awaited_once()
+        recommend_agent.run.assert_awaited_once()
+
+    async def test_adapts_to_missing_agents(self) -> None:
+        """If memory agent is not registered, enrich step is skipped."""
+        intent_agent = AsyncMock()
+        menu_agent = AsyncMock()
+        recommend_agent = AsyncMock()
+
+        state = WorkflowState(user_id="emp_123", session_id="s")
+
+        async def classify(s: WorkflowState) -> WorkflowState:
+            s.intent = "get_recommendation"
+            return s
+
+        intent_agent.run = AsyncMock(side_effect=classify)
+        menu_agent.run = AsyncMock(return_value=state)
+        recommend_agent.run = AsyncMock(return_value=state)
+
+        registry = {
+            "orchestrator": intent_agent,
+            "menu": menu_agent,
+            "recommendation": recommend_agent,
+        }
+
+        await run_adaptive_workflow(state, registry)
+
+        intent_agent.run.assert_awaited_once()
+        menu_agent.run.assert_awaited_once()
+        recommend_agent.run.assert_awaited_once()

@@ -72,6 +72,27 @@ class TestIntentAgentKeyword:
         assert result.constraints["existing_key"] == "value"
         assert result.constraints["budget"] == 20
 
+    async def test_classifies_confirm_order_ill_take(self) -> None:
+        result = await IntentAgent().run(_make_state("I'll take the Grilled Chicken Bowl"))
+        assert result.intent == "confirm_order"
+
+    async def test_classifies_confirm_order_go_with(self) -> None:
+        result = await IntentAgent().run(_make_state("Go with the first one"))
+        assert result.intent == "confirm_order"
+
+    async def test_classifies_confirm_order_sounds_good(self) -> None:
+        result = await IntentAgent().run(_make_state("Sounds good, order it"))
+        assert result.intent == "confirm_order"
+
+    async def test_classifies_confirm_order_that_one(self) -> None:
+        result = await IntentAgent().run(_make_state("That one please"))
+        assert result.intent == "confirm_order"
+
+    async def test_confirm_order_before_order_meal(self) -> None:
+        """'order the' should match confirm_order, not order_meal."""
+        result = await IntentAgent().run(_make_state("Order the Salmon Poke Bowl"))
+        assert result.intent == "confirm_order"
+
     async def test_mode_defaults_to_keyword(self) -> None:
         agent = IntentAgent()
         assert agent.mode == "keyword"
@@ -173,6 +194,20 @@ class TestIntentAgentLLM:
 
         assert result.intent == "order_meal"
         assert result.constraints == {}
+
+    async def test_llm_classifies_confirm_order_with_selected_item(self) -> None:
+        client = _mock_anthropic_response(
+            {
+                "intent": "confirm_order",
+                "constraints": {"selected_item": "Grilled Chicken Bowl"},
+            }
+        )
+        agent = IntentAgent(mode="llm", anthropic_client=client)
+
+        result = await agent.run(_make_state("I'll take the Grilled Chicken Bowl"))
+
+        assert result.intent == "confirm_order"
+        assert result.constraints["selected_item"] == "Grilled Chicken Bowl"
 
     async def test_preserves_existing_constraints_in_llm_mode(self) -> None:
         client = _mock_anthropic_response({"intent": "order_meal", "constraints": {"budget": 20}})

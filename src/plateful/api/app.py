@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from mem0 import MemoryClient
 from pydantic import BaseModel
 
+from plateful.agents.execution import ExecutionAgent
 from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
@@ -14,7 +15,7 @@ from plateful.agents.menu import MenuAgent
 from plateful.agents.recommendation import RecommendationAgent
 from plateful.core.config import settings
 from plateful.core.mem0_client import get_all_memories, get_mem0_client, search_memories
-from plateful.core.orchestrator import run_workflow
+from plateful.core.orchestrator import run_adaptive_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
 
@@ -52,6 +53,7 @@ def _build_agent_registry() -> dict[str, Any]:
         "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
+        "execution": ExecutionAgent(),
     }
     if settings.mem0_api_key:
         mem0_client = get_mem0_client()
@@ -68,9 +70,10 @@ async def health() -> dict[str, str]:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """Process a user message through the orchestrator pipeline.
+    """Process a user message through the adaptive orchestrator pipeline.
 
-    Runs intent classification, menu retrieval, and recommendation.
+    Phase 1: classify intent.
+    Phase 2: route to the appropriate flow based on intent.
     """
     state = WorkflowState(
         user_id=request.user_id,
@@ -80,30 +83,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     registry = _build_agent_registry()
 
-    steps: list[dict[str, Any]] = [
-        {"name": "understand", "agent": "orchestrator"},
-    ]
-    if "memory" in registry:
-        steps.append({"name": "enrich", "agent": "memory"})
-    steps.extend(
-        [
-            {"name": "retrieve", "agent": "menu"},
-            {"name": "recommend", "agent": "recommendation"},
-        ]
-    )
-    if "learning" in registry:
-        steps.append({"name": "learn", "agent": "learning"})
-
-    flow = {"steps": steps}
-
-    state = await run_workflow(flow, state, registry)
+    state = await run_adaptive_workflow(state, registry)
 
     return ChatResponse(
         intent=state.intent,
         constraints=state.constraints,
         menu_items=state.menu_items,
         recommendations=state.recommendations,
-        recommendation_text=state.last_result if isinstance(state.last_result, str) else None,
+        recommendation_text=state.recommendation_text,
         user_profile=state.user_profile,
     )
 

@@ -13,6 +13,7 @@ class WorkflowState:
     user_profile: dict[str, Any] = field(default_factory=dict)
     menu_items: list[dict[str, Any]] = field(default_factory=list)
     recommendations: list[dict[str, Any]] = field(default_factory=list)
+    recommendation_text: str | None = None
     policy_result: dict[str, Any] = field(default_factory=dict)
     requires_approval: bool = False
     order: dict[str, Any] | None = None

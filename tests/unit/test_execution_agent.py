@@ -84,6 +84,62 @@ class TestExecutionAgent:
         notification_msg = result.last_result["notification"]["message"]
         assert "pending" in notification_msg.lower()
 
+    async def test_resolves_selected_item_from_constraints(self) -> None:
+        agent = ExecutionAgent()
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "Chicken Bowl"},
+            menu_items=[
+                {"name": "Grilled Chicken Bowl", "price_usd": 18.50},
+                {"name": "Tofu Stir Fry", "price_usd": 14.00},
+                {"name": "Salmon Poke Bowl", "price_usd": 19.00},
+            ],
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Grilled Chicken Bowl"
+        assert result.order["total_usd"] == 18.50
+
+    async def test_resolves_selected_item_fuzzy_match(self) -> None:
+        agent = ExecutionAgent()
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "salmon"},
+            menu_items=[
+                {"name": "Grilled Chicken Bowl", "price_usd": 18.50},
+                {"name": "Salmon Poke Bowl", "price_usd": 19.00},
+            ],
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Salmon Poke Bowl"
+
+    async def test_falls_back_to_recommendation_when_no_match(self) -> None:
+        agent = ExecutionAgent()
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "nonexistent item"},
+            menu_items=[
+                {"name": "Grilled Chicken Bowl", "price_usd": 18.50},
+            ],
+            recommendations=[{"name": "Tofu Stir Fry", "price_usd": 14.00}],
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Tofu Stir Fry"
+
     async def test_handles_empty_items(self) -> None:
         agent = ExecutionAgent()
         state = WorkflowState(

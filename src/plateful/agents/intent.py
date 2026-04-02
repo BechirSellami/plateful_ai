@@ -14,6 +14,7 @@ logger = structlog.get_logger()
 VALID_INTENTS = frozenset(
     {
         "order_meal",
+        "confirm_order",
         "get_recommendation",
         "create_mealplan",
         "check_order_status",
@@ -24,12 +25,29 @@ VALID_INTENTS = frozenset(
 
 INTENT_SYSTEM_PROMPT = """You are the Intent Classifier for a catering assistant.
 Analyze the user's message and extract:
-1. intent: one of [order_meal, get_recommendation, create_mealplan, check_order_status, declare_preference, ask_question]
+1. intent: one of [order_meal, confirm_order, get_recommendation, create_mealplan, check_order_status, declare_preference, ask_question]
 2. constraints: any mentioned constraints as a flat JSON object. Supported keys:
    - budget (integer, e.g. 25)
    - dietary (string, e.g. "vegetarian", "vegan", "halal", "kosher", "gluten-free", "keto")
    - cuisine (string, e.g. "thai", "italian", "mexican", "japanese", "indian", "chinese", "mediterranean")
    - meal_type (string, e.g. "breakfast", "lunch", "dinner", "snack")
+   - selected_item (string, the specific menu item the user chose, e.g. "Grilled Chicken Bowl")
+
+Intent classification rules:
+- order_meal: the user wants to ORDER or EAT something but hasn't chosen a specific menu item yet. Examples: "I want chicken today", "Get me a salad", "Order lunch", "I'd like something spicy".
+- confirm_order: the user is CONFIRMING a specific menu item to order, typically after seeing recommendations. Examples: "I'll take the Grilled Chicken Bowl", "Yes, order the first one", "Go with the Tofu Stir Fry", "That one please", "Order it", "Yes".
+- get_recommendation: the user wants SUGGESTIONS but hasn't decided yet. Examples: "What should I eat?", "Recommend something healthy", "What's good today?".
+- declare_preference: the user is stating a GENERAL preference, allergy, or restriction — NOT ordering. Examples: "I'm vegetarian", "I'm allergic to peanuts", "I prefer spicy food", "I don't eat pork".
+- create_mealplan: the user wants to plan meals for multiple days. Examples: "Plan my meals for the week".
+- check_order_status: the user is asking about an existing order. Examples: "Where is my order?", "What's the status?".
+- ask_question: the user is asking about the menu or service. Examples: "What's on the menu?", "How does this work?".
+
+Key distinctions:
+- If the user mentions wanting to EAT or HAVE something specific (a food item), that is order_meal, NOT declare_preference.
+- If the user is picking a specific item from recommendations (by name or number), that is confirm_order, NOT order_meal.
+- declare_preference is only for general dietary rules or restrictions.
+
+For confirm_order, extract the selected item name into constraints.selected_item if mentioned.
 
 Respond ONLY with valid JSON, no markdown or explanation:
 {"intent": "...", "constraints": {...}}
@@ -46,6 +64,15 @@ class IntentAgent:
     """
 
     INTENT_KEYWORDS: ClassVar[dict[str, list[str]]] = {
+        "confirm_order": [
+            "i'll take",
+            "i'll have",
+            "go with",
+            "order the",
+            "yes, order",
+            "that one",
+            "sounds good",
+        ],
         "order_meal": ["order", "buy", "get me", "i want", "i'd like", "purchase"],
         "get_recommendation": [
             "recommend",

@@ -94,6 +94,24 @@ class TestRankItems:
         # All should have at least base score
         assert all(item["score"] >= 50 for item in result)
 
+    def test_user_message_boosts_matching_items(self) -> None:
+        result = rank_items(SAMPLE_ITEMS, {}, user_message="I want pasta")
+        assert result[0]["name"] == "Pasta Carbonara"
+
+    def test_user_message_outweighs_stored_preferences(self) -> None:
+        profile = {"favorite_cuisines": ["thai"], "preferences": ["Loves spicy thai food"]}
+        result = rank_items(SAMPLE_ITEMS, profile, user_message="I want pasta or a salad")
+        top_names = [i["name"] for i in result[:2]]
+        assert "Pasta Carbonara" in top_names
+        assert "Caesar Salad" in top_names
+
+    def test_user_message_empty_falls_back_to_profile(self) -> None:
+        profile = {"favorite_cuisines": ["thai"]}
+        result = rank_items(SAMPLE_ITEMS, profile, user_message="")
+        # Thai items should still rank high from profile
+        thai_items = [i for i in result if i["cuisine"] == "thai"]
+        assert thai_items[0]["score"] > 50
+
     def test_empty_items_returns_empty(self) -> None:
         result = rank_items([], {"preferences": ["thai"]})
         assert result == []
@@ -145,6 +163,17 @@ class TestFormatRecommendationsPrompt:
     def test_handles_empty_profile(self) -> None:
         prompt = format_recommendations_prompt([], {}, {})
         assert "No profile data yet" in prompt
+
+    def test_includes_user_message(self) -> None:
+        prompt = format_recommendations_prompt(
+            [], {}, {}, user_message="I want pasta or a sandwich"
+        )
+        assert "I want pasta or a sandwich" in prompt
+        assert "current request" in prompt.lower()
+
+    def test_no_user_message_omits_request_line(self) -> None:
+        prompt = format_recommendations_prompt([], {}, {}, user_message="")
+        assert "User's current request:" not in prompt
 
     def test_includes_scores_when_present(self) -> None:
         items = [

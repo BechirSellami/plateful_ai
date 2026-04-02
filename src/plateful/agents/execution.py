@@ -5,6 +5,8 @@ If the policy agent flagged requires_approval, the order is placed in
 pending_approval status instead of submitted.
 """
 
+from typing import Any
+
 import structlog
 
 from plateful.core.workflow import WorkflowState
@@ -32,13 +34,13 @@ class ExecutionAgent:
             )
             return state
 
-        # Get items to order (top recommendation or all recommendations)
-        items = state.recommendations[:1] if state.recommendations else state.menu_items[:1]
+        # Resolve the item to order
+        items = self._resolve_order_items(state)
         if not items:
             state.last_result = {"status": "error", "reason": "No items to order"}
             return state
 
-        total = float(items[0].get("price_usd", 0))
+        total = sum(float(item.get("price_usd", 0)) for item in items)
 
         # Submit order
         order = await submit_order(
@@ -83,3 +85,32 @@ class ExecutionAgent:
         )
 
         return state
+
+    def _resolve_order_items(self, state: WorkflowState) -> list[dict[str, Any]]:
+        """Determine which item(s) to order.
+
+        Resolution order:
+        1. If ``selected_item`` is in constraints, match it against menu_items.
+        2. Otherwise fall back to the top recommendation, then first menu item.
+        """
+        selected = state.constraints.get("selected_item", "")
+        search_pool = state.menu_items or []
+
+        if selected:
+            selected_lower = selected.lower()
+            for item in search_pool:
+                if selected_lower in item.get("name", "").lower():
+                    return [item]
+            # Fuzzy: check if any word from selected matches an item name
+            selected_words = {w for w in selected_lower.split() if len(w) > 2}
+            for item in search_pool:
+                item_lower = item.get("name", "").lower()
+                if any(w in item_lower for w in selected_words):
+                    return [item]
+
+        # Fallback: top recommendation or first menu item
+        if state.recommendations:
+            return state.recommendations[:1]
+        if search_pool:
+            return search_pool[:1]
+        return []
