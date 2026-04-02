@@ -87,11 +87,14 @@ async def chat_loop() -> None:
         print(f"\n  Intent: {state.intent}")
         if state.constraints:
             print(f"  Constraints: {json.dumps(state.constraints)}")
-        print(f"  Filtered items: {len(state.menu_items)}")
+        if state.menu_items:
+            print(f"  Filtered items: {len(state.menu_items)}")
 
         # Show recommendation
-        if state.last_result and isinstance(state.last_result, str):
-            print(f"\n{state.last_result}")
+        if state.recommendation_text:
+            print(f"\n{state.recommendation_text}")
+        elif state.intent == "declare_preference":
+            print("\n  Got it, I'll remember that!")
         print()
 
 

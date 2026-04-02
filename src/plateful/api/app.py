@@ -87,7 +87,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         constraints=state.constraints,
         menu_items=state.menu_items,
         recommendations=state.recommendations,
-        recommendation_text=state.last_result if isinstance(state.last_result, str) else None,
+        recommendation_text=state.recommendation_text,
         user_profile=state.user_profile,
     )
 

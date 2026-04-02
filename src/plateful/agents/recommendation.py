@@ -68,6 +68,7 @@ class RecommendationAgent:
             recommendation_text = self._format_deterministic_recommendation(top_items)
 
         state.recommendations = top_items[:3]
+        state.recommendation_text = recommendation_text
         state.last_result = recommendation_text
 
         logger.info(
