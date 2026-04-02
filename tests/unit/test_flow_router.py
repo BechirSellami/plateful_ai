@@ -25,14 +25,22 @@ class TestGetFlowForIntent:
         names = [s["name"] for s in flow["steps"]]
         assert names == ["understand", "enrich", "retrieve", "recommend"]
 
-    def test_order_meal_includes_learn(self) -> None:
+    def test_order_meal_includes_execute_and_learn(self) -> None:
+        flow = get_flow_for_intent(
+            "order_meal",
+            {"orchestrator", "memory", "menu", "recommendation", "execution", "learning"},
+        )
+        names = [s["name"] for s in flow["steps"]]
+        assert names == ["understand", "enrich", "retrieve", "recommend", "execute", "learn"]
+
+    def test_order_meal_without_execution_agent(self) -> None:
         flow = get_flow_for_intent(
             "order_meal",
             {"orchestrator", "memory", "menu", "recommendation", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
+        assert "execute" not in names
         assert "learn" in names
-        assert "enrich" in names
 
     def test_unknown_intent_uses_default_flow(self) -> None:
         flow = get_flow_for_intent(
@@ -75,7 +83,7 @@ class TestGetFlowForIntent:
         for intent in INTENT_FLOWS:
             flow = get_flow_for_intent(
                 intent,
-                {"orchestrator", "memory", "menu", "recommendation", "learning"},
+                {"orchestrator", "memory", "menu", "recommendation", "execution", "learning"},
             )
             assert flow["steps"][0]["name"] == "understand"
 

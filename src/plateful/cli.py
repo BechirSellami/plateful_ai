@@ -5,6 +5,7 @@ import json
 
 import anthropic
 
+from plateful.agents.execution import ExecutionAgent
 from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
@@ -31,6 +32,7 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
         "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
+        "execution": ExecutionAgent(),
     }
     if settings.mem0_api_key:
         mem0_client = get_mem0_client()
@@ -93,7 +95,23 @@ async def chat_loop() -> None:
         # Show recommendation
         if state.recommendation_text:
             print(f"\n{state.recommendation_text}")
-        elif state.intent == "declare_preference":
+
+        # Show order confirmation
+        if state.order:
+            order = state.order
+            status = order.get("status", "unknown")
+            order_id = order.get("order_id", "")
+            items = order.get("items", [])
+            item_names = ", ".join(i.get("name", "?") for i in items)
+            total = order.get("total_usd", 0)
+            if status == "submitted":
+                print(f"\n  Order placed! #{order_id}: {item_names} (${total:.2f})")
+            elif status == "pending_approval":
+                print(f"\n  Order #{order_id} is pending approval: {item_names}")
+            elif status == "blocked":
+                print(f"\n  Order blocked: {order.get('reason', 'policy violation')}")
+
+        if state.intent == "declare_preference" and not state.recommendation_text:
             print("\n  Got it, I'll remember that!")
         print()
 

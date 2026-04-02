@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from mem0 import MemoryClient
 from pydantic import BaseModel
 
+from plateful.agents.execution import ExecutionAgent
 from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
@@ -52,6 +53,7 @@ def _build_agent_registry() -> dict[str, Any]:
         "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
+        "execution": ExecutionAgent(),
     }
     if settings.mem0_api_key:
         mem0_client = get_mem0_client()
