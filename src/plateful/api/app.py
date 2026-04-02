@@ -82,9 +82,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )
 
     registry = _build_agent_registry()
-    
+
     state = await run_adaptive_workflow(state, registry)
-  
+
     return ChatResponse(
         intent=state.intent,
         constraints=state.constraints,
