@@ -42,9 +42,7 @@ class TestSearchMemories:
 
         await search_memories(client, query="test", user_id="emp_123", limit=5)
 
-        client.search.assert_called_once_with(
-            query="test", filters={"user_id": "emp_123"}, limit=5
-        )
+        client.search.assert_called_once_with(query="test", filters={"user_id": "emp_123"}, limit=5)
 
 
 @pytest.mark.unit

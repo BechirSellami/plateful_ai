@@ -6,6 +6,7 @@ import json
 import anthropic
 
 from plateful.agents.intent import IntentAgent
+from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
 from plateful.agents.recommendation import RecommendationAgent
@@ -23,10 +24,14 @@ def _build_flow(registry: dict) -> dict:  # type: ignore[type-arg]
     ]
     if "memory" in registry:
         steps.append({"name": "enrich", "agent": "memory"})
-    steps.extend([
-        {"name": "retrieve", "agent": "menu"},
-        {"name": "recommend", "agent": "recommendation"},
-    ])
+    steps.extend(
+        [
+            {"name": "retrieve", "agent": "menu"},
+            {"name": "recommend", "agent": "recommendation"},
+        ]
+    )
+    if "learning" in registry:
+        steps.append({"name": "learn", "agent": "learning"})
     return {"steps": steps}
 
 
@@ -36,23 +41,19 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
         claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     intent_agent = (
-        IntentAgent(mode="llm", anthropic_client=claude_client)
-        if claude_client
-        else IntentAgent()
+        IntentAgent(mode="llm", anthropic_client=claude_client) if claude_client else IntentAgent()
     )
 
-    # Memory agent (requires Mem0 API key)
-    memory_agent = None
-    if settings.mem0_api_key:
-        memory_agent = MemoryAgent(client=get_mem0_client())
-
+    # Memory + Learning agents (require Mem0 API key)
     registry: dict = {  # type: ignore[type-arg]
         "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
     }
-    if memory_agent:
-        registry["memory"] = memory_agent
+    if settings.mem0_api_key:
+        mem0_client = get_mem0_client()
+        registry["memory"] = MemoryAgent(client=mem0_client)
+        registry["learning"] = LearningAgent(client=mem0_client)
 
     return registry
 
