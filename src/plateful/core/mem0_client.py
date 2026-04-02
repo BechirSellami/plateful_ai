@@ -20,7 +20,12 @@ async def search_memories(
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     try:
-        results = client.search(query=query, user_id=user_id, limit=limit)
+        response = client.search(
+            query=query,
+            filters={"user_id": user_id},
+            limit=limit,
+        )
+        results = response.get("results", []) if isinstance(response, dict) else response
         logger.info(
             "mem0_search_complete",
             user_id=user_id,
@@ -54,7 +59,8 @@ async def get_all_memories(
     user_id: str,
 ) -> list[dict[str, Any]]:
     try:
-        results = client.get_all(user_id=user_id)
+        response = client.get_all(filters={"user_id": user_id})
+        results = response.get("results", []) if isinstance(response, dict) else response
         return results  # type: ignore[no-any-return]
     except Exception:
         logger.exception("mem0_get_all_failed", user_id=user_id)

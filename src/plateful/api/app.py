@@ -3,13 +3,15 @@
 from typing import Any
 
 import anthropic
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from plateful.agents.intent import IntentAgent
+from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
 from plateful.agents.recommendation import RecommendationAgent
 from plateful.core.config import settings
+from plateful.core.mem0_client import get_all_memories, get_mem0_client, search_memories
 from plateful.core.orchestrator import run_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
@@ -39,11 +41,26 @@ def _build_agent_registry() -> dict[str, Any]:
     if settings.anthropic_api_key:
         claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    return {
-        "orchestrator": IntentAgent(),
+    intent_agent = (
+        IntentAgent(mode="llm", anthropic_client=claude_client)
+        if claude_client
+        else IntentAgent()
+    )
+
+    # Memory agent (requires Mem0 API key)
+    memory_agent = None
+    if settings.mem0_api_key:
+        memory_agent = MemoryAgent(client=get_mem0_client())
+
+    registry: dict[str, Any] = {
+        "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
     }
+    if memory_agent:
+        registry["memory"] = memory_agent
+
+    return registry
 
 
 @app.get("/health")
@@ -65,13 +82,17 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     registry = _build_agent_registry()
 
-    flow = {
-        "steps": [
-            {"name": "understand", "agent": "orchestrator"},
-            {"name": "retrieve", "agent": "menu"},
-            {"name": "recommend", "agent": "recommendation"},
-        ]
-    }
+    steps: list[dict[str, Any]] = [
+        {"name": "understand", "agent": "orchestrator"},
+    ]
+    if "memory" in registry:
+        steps.append({"name": "enrich", "agent": "memory"})
+    steps.extend([
+        {"name": "retrieve", "agent": "menu"},
+        {"name": "recommend", "agent": "recommendation"},
+    ])
+
+    flow = {"steps": steps}
 
     state = await run_workflow(flow, state, registry)
 
@@ -89,3 +110,45 @@ async def chat(request: ChatRequest) -> ChatResponse:
 async def get_menu() -> list[dict[str, Any]]:
     """Return the full menu."""
     return SAMPLE_MENU
+
+
+# --- Memory endpoints ------------------------------------------------------
+
+
+def _require_mem0_client():  # type: ignore[no-untyped-def]
+    """Return a Mem0 client or raise 503 if not configured."""
+    if not settings.mem0_api_key:
+        raise HTTPException(status_code=503, detail="Mem0 is not configured (no MEM0_API_KEY)")
+    return get_mem0_client()
+
+
+@app.get("/api/memories/{user_id}")
+async def list_memories(user_id: str) -> list[dict[str, Any]]:
+    """List all stored memories for a user."""
+    client = _require_mem0_client()
+    return await get_all_memories(client, user_id=user_id)
+
+
+@app.get("/api/memories/{user_id}/search")
+async def search_user_memories(
+    user_id: str, q: str, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Search memories for a user by query string."""
+    client = _require_mem0_client()
+    return await search_memories(client, query=q, user_id=user_id, limit=limit)
+
+
+@app.delete("/api/memories/{user_id}")
+async def delete_all_memories(user_id: str) -> dict[str, str]:
+    """Delete all memories for a user."""
+    client = _require_mem0_client()
+    client.delete_all(filters={"user_id": user_id})
+    return {"status": "deleted", "user_id": user_id}
+
+
+@app.delete("/api/memories/{user_id}/{memory_id}")
+async def delete_memory(user_id: str, memory_id: str) -> dict[str, str]:
+    """Delete a specific memory by ID."""
+    client = _require_mem0_client()
+    client.delete(memory_id=memory_id)
+    return {"status": "deleted", "memory_id": memory_id}
