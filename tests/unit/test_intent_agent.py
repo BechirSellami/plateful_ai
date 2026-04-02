@@ -29,15 +29,11 @@ class TestIntentAgentKeyword:
         assert result.intent == "order_meal"
 
     async def test_classifies_recommendation_intent(self) -> None:
-        result = await IntentAgent().run(
-            _make_state("Can you recommend something healthy?")
-        )
+        result = await IntentAgent().run(_make_state("Can you recommend something healthy?"))
         assert result.intent == "get_recommendation"
 
     async def test_classifies_mealplan_intent(self) -> None:
-        result = await IntentAgent().run(
-            _make_state("Create a meal plan for the week")
-        )
+        result = await IntentAgent().run(_make_state("Create a meal plan for the week"))
         assert result.intent == "create_mealplan"
 
     async def test_classifies_preference_intent(self) -> None:
@@ -104,9 +100,7 @@ def _mock_anthropic_response(payload: dict[str, Any]) -> AsyncMock:
 @pytest.mark.unit
 class TestIntentAgentLLM:
     async def test_llm_classifies_intent(self) -> None:
-        client = _mock_anthropic_response(
-            {"intent": "order_meal", "constraints": {"budget": 30}}
-        )
+        client = _mock_anthropic_response({"intent": "order_meal", "constraints": {"budget": 30}})
         agent = IntentAgent(mode="llm", anthropic_client=client)
 
         result = await agent.run(_make_state("I'd like to order something under $30"))
@@ -130,9 +124,7 @@ class TestIntentAgentLLM:
         assert result.constraints == {"dietary": "vegan", "cuisine": "thai", "budget": 15}
 
     async def test_llm_invalid_intent_defaults(self) -> None:
-        client = _mock_anthropic_response(
-            {"intent": "do_a_dance", "constraints": {}}
-        )
+        client = _mock_anthropic_response({"intent": "do_a_dance", "constraints": {}})
         agent = IntentAgent(mode="llm", anthropic_client=client)
 
         result = await agent.run(_make_state("Do a dance"))
@@ -174,9 +166,7 @@ class TestIntentAgentLLM:
         assert result.intent == "order_meal"
 
     async def test_llm_bad_constraints_type_ignored(self) -> None:
-        client = _mock_anthropic_response(
-            {"intent": "order_meal", "constraints": "not a dict"}
-        )
+        client = _mock_anthropic_response({"intent": "order_meal", "constraints": "not a dict"})
         agent = IntentAgent(mode="llm", anthropic_client=client)
 
         result = await agent.run(_make_state("Order lunch"))
@@ -185,9 +175,7 @@ class TestIntentAgentLLM:
         assert result.constraints == {}
 
     async def test_preserves_existing_constraints_in_llm_mode(self) -> None:
-        client = _mock_anthropic_response(
-            {"intent": "order_meal", "constraints": {"budget": 20}}
-        )
+        client = _mock_anthropic_response({"intent": "order_meal", "constraints": {"budget": 20}})
         agent = IntentAgent(mode="llm", anthropic_client=client)
 
         result = await agent.run(

@@ -24,10 +24,12 @@ def _build_flow(registry: dict) -> dict:  # type: ignore[type-arg]
     ]
     if "memory" in registry:
         steps.append({"name": "enrich", "agent": "memory"})
-    steps.extend([
-        {"name": "retrieve", "agent": "menu"},
-        {"name": "recommend", "agent": "recommendation"},
-    ])
+    steps.extend(
+        [
+            {"name": "retrieve", "agent": "menu"},
+            {"name": "recommend", "agent": "recommendation"},
+        ]
+    )
     if "learning" in registry:
         steps.append({"name": "learn", "agent": "learning"})
     return {"steps": steps}
@@ -39,9 +41,7 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
         claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     intent_agent = (
-        IntentAgent(mode="llm", anthropic_client=claude_client)
-        if claude_client
-        else IntentAgent()
+        IntentAgent(mode="llm", anthropic_client=claude_client) if claude_client else IntentAgent()
     )
 
     # Memory + Learning agents (require Mem0 API key)

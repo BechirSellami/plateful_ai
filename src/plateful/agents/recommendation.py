@@ -90,7 +90,7 @@ class RecommendationAgent:
         try:
             prompt = format_recommendations_prompt(items, profile, constraints)
 
-            response = await self._client.messages.create(
+            response = await self._client.messages.create(  # type: ignore[union-attr]
                 model="claude-sonnet-4-20250514",
                 system=RECOMMENDATION_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],

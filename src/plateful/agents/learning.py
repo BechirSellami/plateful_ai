@@ -114,9 +114,7 @@ class LearningAgent:
 
         # Recommendations that were surfaced (accepted implicitly if ordered)
         if state.recommendations and state.order:
-            ordered_names = {
-                item.get("name", "").lower() for item in state.order.get("items", [])
-            }
+            ordered_names = {item.get("name", "").lower() for item in state.order.get("items", [])}
             for rec in state.recommendations:
                 name = rec.get("name", "")
                 if name.lower() in ordered_names:

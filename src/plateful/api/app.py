@@ -4,6 +4,7 @@ from typing import Any
 
 import anthropic
 from fastapi import FastAPI, HTTPException
+from mem0 import MemoryClient
 from pydantic import BaseModel
 
 from plateful.agents.intent import IntentAgent
@@ -43,9 +44,7 @@ def _build_agent_registry() -> dict[str, Any]:
         claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
     intent_agent = (
-        IntentAgent(mode="llm", anthropic_client=claude_client)
-        if claude_client
-        else IntentAgent()
+        IntentAgent(mode="llm", anthropic_client=claude_client) if claude_client else IntentAgent()
     )
 
     # Memory + Learning agents (require Mem0 API key)
@@ -86,10 +85,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
     ]
     if "memory" in registry:
         steps.append({"name": "enrich", "agent": "memory"})
-    steps.extend([
-        {"name": "retrieve", "agent": "menu"},
-        {"name": "recommend", "agent": "recommendation"},
-    ])
+    steps.extend(
+        [
+            {"name": "retrieve", "agent": "menu"},
+            {"name": "recommend", "agent": "recommendation"},
+        ]
+    )
     if "learning" in registry:
         steps.append({"name": "learn", "agent": "learning"})
 
@@ -116,7 +117,7 @@ async def get_menu() -> list[dict[str, Any]]:
 # --- Memory endpoints ------------------------------------------------------
 
 
-def _require_mem0_client():  # type: ignore[no-untyped-def]
+def _require_mem0_client() -> MemoryClient:
     """Return a Mem0 client or raise 503 if not configured."""
     if not settings.mem0_api_key:
         raise HTTPException(status_code=503, detail="Mem0 is not configured (no MEM0_API_KEY)")
@@ -131,9 +132,7 @@ async def list_memories(user_id: str) -> list[dict[str, Any]]:
 
 
 @app.get("/api/memories/{user_id}/search")
-async def search_user_memories(
-    user_id: str, q: str, limit: int = 10
-) -> list[dict[str, Any]]:
+async def search_user_memories(user_id: str, q: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search memories for a user by query string."""
     client = _require_mem0_client()
     return await search_memories(client, query=q, user_id=user_id, limit=limit)
