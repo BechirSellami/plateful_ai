@@ -53,9 +53,23 @@ def summarize_session_events(events: list[dict[str, Any]]) -> str:
             rating = payload.get("rating", "")
             signals.append(f"User rated {item_name}: {rating}/5")
 
+        elif event_type == "preference_declared":
+            message = payload.get("message", "")
+            dietary = payload.get("dietary", "")
+            cuisine = payload.get("cuisine", "")
+            budget = payload.get("budget", "")
+            if message:
+                signals.append(f"User stated: {message}")
+            if dietary:
+                signals.append(f"User follows a {dietary} diet")
+            if cuisine:
+                signals.append(f"User prefers {cuisine} cuisine")
+            if budget:
+                signals.append(f"User prefers meals under ${budget}")
+
         elif event_type == "allergy_declared":
-            allergen = payload.get("ingredient", "something")
-            signals.append(f"User declared allergy to {allergen}")
+            allergen = payload.get("ingredient", payload.get("dietary", "something"))
+            signals.append(f"User declared allergy/restriction: {allergen}")
 
         elif event_type == "mealplan_edited":
             day = payload.get("day", "a day")

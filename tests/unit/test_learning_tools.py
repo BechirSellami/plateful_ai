@@ -10,7 +10,10 @@ class TestSummarizeSessionEvents:
 
     def test_order_placed(self) -> None:
         events = [
-            {"event_type": "order_placed", "payload": {"item_name": "Chicken Bowl", "price_usd": 18.5}}
+            {
+                "event_type": "order_placed",
+                "payload": {"item_name": "Chicken Bowl", "price_usd": 18.5},
+            }
         ]
         result = summarize_session_events(events)
         assert "Chicken Bowl" in result
@@ -47,16 +50,37 @@ class TestSummarizeSessionEvents:
         assert "rejected suggestion: Sushi" in summarize_session_events(events)
 
     def test_rating_given(self) -> None:
-        events = [
-            {"event_type": "rating_given", "payload": {"item_name": "Pizza", "rating": 4}}
-        ]
+        events = [{"event_type": "rating_given", "payload": {"item_name": "Pizza", "rating": 4}}]
         result = summarize_session_events(events)
         assert "Pizza" in result
         assert "4/5" in result
 
+    def test_preference_declared_with_message(self) -> None:
+        events = [
+            {"event_type": "preference_declared", "payload": {"message": "I prefer spicy food"}}
+        ]
+        result = summarize_session_events(events)
+        assert "I prefer spicy food" in result
+
+    def test_preference_declared_with_dietary(self) -> None:
+        events = [{"event_type": "preference_declared", "payload": {"dietary": "vegan"}}]
+        assert "vegan diet" in summarize_session_events(events)
+
+    def test_preference_declared_with_cuisine(self) -> None:
+        events = [{"event_type": "preference_declared", "payload": {"cuisine": "thai"}}]
+        assert "thai cuisine" in summarize_session_events(events)
+
+    def test_preference_declared_with_budget(self) -> None:
+        events = [{"event_type": "preference_declared", "payload": {"budget": 25}}]
+        assert "$25" in summarize_session_events(events)
+
     def test_allergy_declared(self) -> None:
         events = [{"event_type": "allergy_declared", "payload": {"ingredient": "peanuts"}}]
-        assert "allergy to peanuts" in summarize_session_events(events)
+        assert "peanuts" in summarize_session_events(events)
+
+    def test_allergy_declared_from_dietary_constraint(self) -> None:
+        events = [{"event_type": "allergy_declared", "payload": {"dietary": "gluten-free"}}]
+        assert "gluten-free" in summarize_session_events(events)
 
     def test_mealplan_edited(self) -> None:
         events = [{"event_type": "mealplan_edited", "payload": {"day": "Monday"}}]

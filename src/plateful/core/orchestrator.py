@@ -3,6 +3,7 @@ from typing import Any
 
 import structlog
 
+from plateful.core.flow_router import get_flow_for_intent
 from plateful.core.workflow import BaseAgent, WorkflowState
 
 logger = structlog.get_logger()
@@ -105,6 +106,38 @@ async def run_workflow(
             )
 
         logger.info("step_complete", step=step_name, agent=agent_name, trace_id=state.trace_id)
+
+    return state
+
+
+async def run_adaptive_workflow(
+    state: WorkflowState,
+    agent_registry: dict[str, BaseAgent],
+    audit_fn: Any | None = None,
+) -> WorkflowState:
+    """Two-phase workflow: classify intent first, then route to the right flow.
+
+    Phase 1 — run the ``understand`` step to classify intent.
+    Phase 2 — select and execute the remaining steps based on ``state.intent``.
+    """
+    # Phase 1: classify intent
+    intent_agent = agent_registry.get("orchestrator")
+    if intent_agent:
+        logger.info("step_start", step="understand", agent="orchestrator", trace_id=state.trace_id)
+        state = await intent_agent.run(state)
+        logger.info(
+            "step_complete", step="understand", agent="orchestrator", trace_id=state.trace_id
+        )
+
+    # Phase 2: route based on intent
+    available = set(agent_registry.keys())
+    flow = get_flow_for_intent(state.intent, available)
+
+    # Skip the understand step (already executed in phase 1)
+    remaining_steps = [s for s in flow["steps"] if s["name"] != "understand"]
+    remaining_flow = {"steps": remaining_steps}
+
+    state = await run_workflow(remaining_flow, state, agent_registry, audit_fn=audit_fn)
 
     return state
 
