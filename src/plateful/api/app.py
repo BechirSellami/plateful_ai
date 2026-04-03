@@ -24,10 +24,11 @@ from plateful.core.workflow import WorkflowState
 
 app = FastAPI(title="Plateful AI", description="Catering Agent API", version="0.1.0")
 
-# Static files (Chat UI)
+# Static files (Chat UI built by Vite into ../static/)
 _STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "static"
-if _STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+_ASSETS_DIR = _STATIC_DIR / "assets"
+if _ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
 
 
 class ChatRequest(BaseModel):
