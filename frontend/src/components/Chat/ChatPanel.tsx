@@ -1,17 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useUser } from "../../context/UserContext";
+import { useEffect, useRef } from "react";
+import { useChat } from "../../context/ChatContext";
 import { useWs } from "../../context/WsContext";
-import type { WsIncoming, WsResultEvent } from "../../types/ws";
 import styles from "./ChatPanel.module.css";
-
-interface ChatMessage {
-  id: number;
-  role: "user" | "agent";
-  content: string;
-  intent?: string | null;
-  order?: WsResultEvent["order"];
-  steps?: string[];
-}
 
 const EXAMPLES = [
   "I want pasta or a sandwich",
@@ -20,91 +10,18 @@ const EXAMPLES = [
   "Show me Thai food options",
 ];
 
-let msgId = 0;
-
 export default function ChatPanel() {
-  const { userId, sessionId } = useUser();
-  const { send, subscribe, connected } = useWs();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [processing, setProcessing] = useState(false);
-  const [pendingSteps, setPendingSteps] = useState<string[]>([]);
+  const { messages, input, setInput, processing, pendingSteps, handleSend } =
+    useChat();
+  const { connected } = useWs();
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = useCallback(() => {
+  // Auto-scroll on new messages or steps
+  useEffect(() => {
     requestAnimationFrame(() =>
       chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
     );
-  }, []);
-
-  // Subscribe to WS messages
-  useEffect(() => {
-    const unsub = subscribe((data: WsIncoming) => {
-      if (data.type === "step") {
-        setPendingSteps((prev) => [...prev, data.step]);
-        scrollToBottom();
-      } else if (data.type === "result") {
-        const steps = [...pendingSteps, "done"];
-        setPendingSteps([]);
-
-        let content = "";
-        if (data.recommendation_text) {
-          content = data.recommendation_text;
-        } else if (data.intent === "declare_preference") {
-          content = "Got it, I'll remember that for next time!";
-        } else if (data.order?.status === "submitted") {
-          const items = data.order.items.map((i) => i.name).join(", ");
-          const total = data.order.total_usd
-            ? `$${data.order.total_usd.toFixed(2)}`
-            : "";
-          content = `Order placed! #${data.order.order_id}: ${items} ${total}`;
-        } else {
-          content = "Done.";
-        }
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: ++msgId,
-            role: "agent",
-            content,
-            intent: data.intent,
-            order: data.order,
-            steps,
-          },
-        ]);
-        setProcessing(false);
-        scrollToBottom();
-      } else if (data.type === "error") {
-        setPendingSteps([]);
-        setMessages((prev) => [
-          ...prev,
-          { id: ++msgId, role: "agent", content: `Error: ${data.detail}` },
-        ]);
-        setProcessing(false);
-        scrollToBottom();
-      }
-    });
-    return unsub;
-  }, [subscribe, pendingSteps, scrollToBottom]);
-
-  const handleSend = useCallback(
-    (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed || processing || !connected) return;
-
-      setMessages((prev) => [
-        ...prev,
-        { id: ++msgId, role: "user", content: trimmed },
-      ]);
-      setProcessing(true);
-      setPendingSteps([]);
-      setInput("");
-
-      send({ message: trimmed, user_id: userId, session_id: sessionId });
-    },
-    [processing, connected, send, userId, sessionId]
-  );
+  }, [messages, pendingSteps]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,7 +66,10 @@ export default function ChatPanel() {
                 {m.steps
                   .filter((s) => s !== "done")
                   .map((s, i) => (
-                    <span key={i} className={`${styles.stepChip} ${styles.done}`}>
+                    <span
+                      key={i}
+                      className={`${styles.stepChip} ${styles.done}`}
+                    >
                       {s} &#10003;
                     </span>
                   ))}
