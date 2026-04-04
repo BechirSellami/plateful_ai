@@ -6,14 +6,14 @@ import json
 import anthropic
 
 from plateful.agents.execution import ExecutionAgent
-from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
+from plateful.agents.planner import PlannerAgent
 from plateful.agents.recommendation import RecommendationAgent
 from plateful.core.config import settings
 from plateful.core.mem0_client import get_mem0_client
-from plateful.core.orchestrator import run_adaptive_workflow
+from plateful.core.orchestrator import run_planned_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
 
@@ -23,13 +23,8 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
     if settings.anthropic_api_key:
         claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    intent_agent = (
-        IntentAgent(mode="llm", anthropic_client=claude_client) if claude_client else IntentAgent()
-    )
-
     # Memory + Learning agents (require Mem0 API key)
     registry: dict = {  # type: ignore[type-arg]
-        "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
         "execution": ExecutionAgent(),
@@ -42,17 +37,28 @@ def _build_registry() -> dict:  # type: ignore[type-arg]
     return registry
 
 
+def _build_planner() -> PlannerAgent:
+    claude_client = None
+    if settings.anthropic_api_key:
+        claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+    if claude_client:
+        return PlannerAgent(mode="llm", anthropic_client=claude_client)
+    return PlannerAgent(mode="keyword")
+
+
 async def chat_loop() -> None:
     user_id = "emp_demo"
     session_id = "sess_demo"
     registry = _build_registry()
+    planner = _build_planner()
 
     print("=" * 60)
     print("  Plateful AI — Catering Agent")
     if settings.anthropic_api_key:
-        print("  Mode: LLM-powered recommendations (Claude)")
+        print("  Orchestrator: LLM Planner (Claude)")
     else:
-        print("  Mode: Deterministic only (no ANTHROPIC_API_KEY)")
+        print("  Orchestrator: Keyword fallback (no ANTHROPIC_API_KEY)")
     if "memory" in registry:
         print("  Memory: Mem0 Cloud (user preferences enabled)")
     else:
@@ -84,7 +90,7 @@ async def chat_loop() -> None:
             messages=[{"role": "user", "content": message}],
         )
 
-        state = await run_adaptive_workflow(state, registry)
+        state = await run_planned_workflow(state, registry, planner)
 
         print(f"\n  Intent: {state.intent}")
         if state.constraints:

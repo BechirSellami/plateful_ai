@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from typing import Any
 
 import structlog
@@ -95,15 +96,17 @@ async def run_workflow(
         if step.get("post_check"):
             run_safety_check(step["post_check"], state)
 
-        # Audit
+        # Audit (supports both sync and async callbacks)
         if audit_fn:
-            audit_fn(
+            result = audit_fn(
                 trace_id=state.trace_id,
                 step=step_name,
                 agent=agent_name,
                 snapshot=state.snapshot(),
                 output=state.last_result,
             )
+            if inspect.isawaitable(result):
+                await result
 
         logger.info("step_complete", step=step_name, agent=agent_name, trace_id=state.trace_id)
 
@@ -138,6 +141,34 @@ async def run_adaptive_workflow(
     remaining_flow = {"steps": remaining_steps}
 
     state = await run_workflow(remaining_flow, state, agent_registry, audit_fn=audit_fn)
+
+    return state
+
+
+async def run_planned_workflow(
+    state: WorkflowState,
+    agent_registry: dict[str, BaseAgent],
+    planner: Any,
+    audit_fn: Any | None = None,
+) -> WorkflowState:
+    """Planner-driven workflow: LLM builds an execution plan, then we run it.
+
+    Phase 1 — Planner analyzes the user message and produces an ordered list
+    of agent steps (handles compound intents like preference + order).
+    Phase 2 — Execute each step in the plan sequentially.
+    """
+    # Phase 1: plan
+    available = {k for k in agent_registry if k != "orchestrator"}
+    plan_result = await planner.plan(state, available)
+
+    # Phase 2: execute the plan
+    plan_steps = plan_result.get("plan", [])
+    flow_steps = [
+        {"name": step.get("reason", step["agent"]), "agent": step["agent"]} for step in plan_steps
+    ]
+    flow_def: dict[str, Any] = {"steps": flow_steps}
+
+    state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
 
     return state
 
