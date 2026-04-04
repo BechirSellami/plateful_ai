@@ -6,12 +6,13 @@ and feeds the summary to Mem0 so future sessions benefit from the learned
 preferences.
 """
 
-from typing import Any, ClassVar
+from typing import Any
 
 import structlog
 from mem0 import MemoryClient
 
 from plateful.core.mem0_client import add_memories
+from plateful.core.preference_signals import has_preference_signal
 from plateful.core.workflow import WorkflowState
 from plateful.tools.learning_tools import build_mem0_messages, summarize_session_events
 
@@ -66,26 +67,6 @@ class LearningAgent:
 
         return state
 
-    # Signals that indicate a preference statement in the user message.
-    # Shared with PlannerAgent._PREFERENCE_SIGNALS.
-    _PREFERENCE_SIGNALS: ClassVar[list[str]] = [
-        "i love",
-        "i like",
-        "i enjoy",
-        "i prefer",
-        "i hate",
-        "i avoid",
-        "i can't have",
-        "i don't eat",
-        "allergic",
-        "allergy",
-        "vegetarian",
-        "vegan",
-        "gluten-free",
-        "my favourite",
-        "my favorite",
-    ]
-
     def _collect_events(self, state: WorkflowState) -> list[dict[str, Any]]:
         """Gather learning-worthy events from the workflow state.
 
@@ -103,9 +84,7 @@ class LearningAgent:
         # the classified intent — compound messages like "I love spicy
         # food, what do you recommend?" have intent=get_recommendation
         # but still contain a preference worth saving.
-        has_preference = state.intent == "declare_preference" or any(
-            sig in user_message.lower() for sig in self._PREFERENCE_SIGNALS
-        )
+        has_preference = state.intent == "declare_preference" or has_preference_signal(user_message)
 
         if has_preference and user_message:
             events.append(

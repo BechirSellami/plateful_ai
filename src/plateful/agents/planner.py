@@ -10,7 +10,7 @@ Falls back to keyword-based intent classification when no LLM is available.
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 import anthropic
 import structlog
@@ -197,25 +197,6 @@ class PlannerAgent:
 
     # --- Keyword planning (fallback) ------------------------------------------
 
-    # Patterns that signal a preference statement
-    _PREFERENCE_SIGNALS: ClassVar[list[str]] = [
-        "i love",
-        "i like",
-        "i enjoy",
-        "i prefer",
-        "i hate",
-        "i avoid",
-        "i can't have",
-        "i don't eat",
-        "allergic",
-        "allergy",
-        "vegetarian",
-        "vegan",
-        "gluten-free",
-        "my favourite",
-        "my favorite",
-    ]
-
     def _plan_keyword(self, message: str, available_agents: set[str]) -> dict[str, Any]:
         """Deterministic planning using keyword matching.
 
@@ -225,6 +206,7 @@ class PlannerAgent:
         """
         from plateful.agents.intent import IntentAgent
         from plateful.core.flow_router import get_flow_for_intent
+        from plateful.core.preference_signals import has_preference_signal
 
         # Reuse IntentAgent's keyword classification
         agent = IntentAgent(mode="keyword")
@@ -232,8 +214,7 @@ class PlannerAgent:
         constraints = agent._extract_constraints(message)
 
         # Detect embedded preference
-        msg_lower = message.lower()
-        has_preference = any(sig in msg_lower for sig in self._PREFERENCE_SIGNALS)
+        has_preference = has_preference_signal(message)
 
         # Map to plan via the existing flow router
         flow = get_flow_for_intent(intent, available_agents)
