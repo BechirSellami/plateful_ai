@@ -154,6 +154,39 @@ class TestLearningAgent:
         assert result.last_result["status"] == "skipped"
         client.add.assert_not_called()
 
+    async def test_learns_embedded_preference_in_recommendation(self) -> None:
+        """'I love spicy food, what do you recommend?' should save preference."""
+        client = _make_client()
+        agent = LearningAgent(client=client)
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            intent="get_recommendation",
+            messages=[{"role": "user", "content": "I love spicy food, what do you recommend?"}],
+        )
+
+        result = await agent.run(state)
+
+        assert result.last_result["status"] == "learned"
+        assert "I love spicy food" in result.last_result["summary"]
+        client.add.assert_called_once()
+
+    async def test_learns_embedded_preference_in_order(self) -> None:
+        """'I enjoy Italian, order me a pasta' should save preference."""
+        client = _make_client()
+        agent = LearningAgent(client=client)
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            intent="order_meal",
+            messages=[{"role": "user", "content": "I enjoy Italian, order me a pasta"}],
+        )
+
+        result = await agent.run(state)
+
+        assert result.last_result["status"] == "learned"
+        assert "I enjoy Italian" in result.last_result["summary"]
+
     async def test_multiple_items_in_order(self) -> None:
         client = _make_client()
         agent = LearningAgent(client=client)

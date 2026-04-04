@@ -6,7 +6,7 @@ and feeds the summary to Mem0 so future sessions benefit from the learned
 preferences.
 """
 
-from typing import Any
+from typing import Any, ClassVar
 
 import structlog
 from mem0 import MemoryClient
@@ -66,6 +66,26 @@ class LearningAgent:
 
         return state
 
+    # Signals that indicate a preference statement in the user message.
+    # Shared with PlannerAgent._PREFERENCE_SIGNALS.
+    _PREFERENCE_SIGNALS: ClassVar[list[str]] = [
+        "i love",
+        "i like",
+        "i enjoy",
+        "i prefer",
+        "i hate",
+        "i avoid",
+        "i can't have",
+        "i don't eat",
+        "allergic",
+        "allergy",
+        "vegetarian",
+        "vegan",
+        "gluten-free",
+        "my favourite",
+        "my favorite",
+    ]
+
     def _collect_events(self, state: WorkflowState) -> list[dict[str, Any]]:
         """Gather learning-worthy events from the workflow state.
 
@@ -74,18 +94,26 @@ class LearningAgent:
         """
         events: list[dict[str, Any]] = []
 
-        # Preference / constraint declarations from the conversation
-        if state.intent == "declare_preference":
-            user_message = ""
-            if state.messages:
-                user_message = state.messages[-1].get("content", "")
-            if user_message:
-                events.append(
-                    {
-                        "event_type": "preference_declared",
-                        "payload": {"message": user_message},
-                    }
-                )
+        user_message = ""
+        if state.messages:
+            user_message = state.messages[-1].get("content", "")
+
+        # Preference / constraint declarations from the conversation.
+        # Detect preference signals from the user message regardless of
+        # the classified intent — compound messages like "I love spicy
+        # food, what do you recommend?" have intent=get_recommendation
+        # but still contain a preference worth saving.
+        has_preference = state.intent == "declare_preference" or any(
+            sig in user_message.lower() for sig in self._PREFERENCE_SIGNALS
+        )
+
+        if has_preference and user_message:
+            events.append(
+                {
+                    "event_type": "preference_declared",
+                    "payload": {"message": user_message},
+                }
+            )
 
             # Also capture any extracted constraints (dietary, cuisine, etc.)
             for key in ("dietary", "cuisine", "budget"):
