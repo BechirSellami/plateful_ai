@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from plateful.agents.planner import PlannerAgent
 from plateful.api.ws import websocket_chat
 from plateful.core.workflow import WorkflowState
 
@@ -21,7 +22,6 @@ class FakeWebSocket:
 
     async def receive_json(self) -> dict[str, Any]:
         if self._call_count >= len(self._incoming):
-            # Simulate disconnect after messages are exhausted
             from fastapi import WebSocketDisconnect
 
             raise WebSocketDisconnect(code=1000)
@@ -47,41 +47,42 @@ class FakeAgent:
         return state
 
 
+def _keyword_planner() -> PlannerAgent:
+    return PlannerAgent(mode="keyword")
+
+
 @pytest.mark.unit
 class TestWebSocketChat:
     async def test_sends_step_and_result_messages(self) -> None:
         ws = FakeWebSocket([{"message": "hello", "user_id": "u1", "session_id": "s1"}])
         registry: dict[str, Any] = {
-            "orchestrator": FakeAgent(intent="get_recommendation"),
             "menu": FakeAgent(),
             "recommendation": FakeAgent(),
         }
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
         types = [m["type"] for m in ws.sent]
-        # Should have step messages + a result
         assert "step" in types
         assert "result" in types
 
     async def test_result_contains_intent(self) -> None:
         ws = FakeWebSocket([{"message": "order lunch", "user_id": "u1", "session_id": "s1"}])
         registry: dict[str, Any] = {
-            "orchestrator": FakeAgent(intent="order_meal"),
             "menu": FakeAgent(),
             "recommendation": FakeAgent(),
         }
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
         result = next(m for m in ws.sent if m["type"] == "result")
         assert result["intent"] == "order_meal"
 
     async def test_empty_message_returns_error(self) -> None:
         ws = FakeWebSocket([{"message": "", "user_id": "u1", "session_id": "s1"}])
-        registry: dict[str, Any] = {"orchestrator": FakeAgent()}
+        registry: dict[str, Any] = {}
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
         assert ws.sent[0]["type"] == "error"
         assert "Empty" in ws.sent[0]["detail"]
@@ -94,12 +95,11 @@ class TestWebSocketChat:
             ]
         )
         registry: dict[str, Any] = {
-            "orchestrator": FakeAgent(intent="get_recommendation"),
             "menu": FakeAgent(),
             "recommendation": FakeAgent(),
         }
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
         results = [m for m in ws.sent if m["type"] == "result"]
         assert len(results) == 2
@@ -110,23 +110,24 @@ class TestWebSocketChat:
                 msg = "boom"
                 raise RuntimeError(msg)
 
-        ws = FakeWebSocket([{"message": "test", "user_id": "u1", "session_id": "s1"}])
-        registry: dict[str, Any] = {"orchestrator": BrokenAgent()}
+        ws = FakeWebSocket([{"message": "order lunch", "user_id": "u1", "session_id": "s1"}])
+        registry: dict[str, Any] = {"menu": BrokenAgent(), "recommendation": FakeAgent()}
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
-        assert ws.sent[0]["type"] == "step"  # understand step sent first
-        assert ws.sent[1]["type"] == "error"
+        # First message is "plan" step, then error from broken agent
+        assert ws.sent[0]["type"] == "step"
+        error_msgs = [m for m in ws.sent if m["type"] == "error"]
+        assert len(error_msgs) >= 1
 
     async def test_defaults_user_and_session(self) -> None:
         ws = FakeWebSocket([{"message": "hi"}])
         registry: dict[str, Any] = {
-            "orchestrator": FakeAgent(intent="get_recommendation"),
             "menu": FakeAgent(),
             "recommendation": FakeAgent(),
         }
 
-        await websocket_chat(ws, registry)  # type: ignore[arg-type]
+        await websocket_chat(ws, registry, _keyword_planner())  # type: ignore[arg-type]
 
         result = next(m for m in ws.sent if m["type"] == "result")
         assert result["type"] == "result"

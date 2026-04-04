@@ -145,6 +145,34 @@ async def run_adaptive_workflow(
     return state
 
 
+async def run_planned_workflow(
+    state: WorkflowState,
+    agent_registry: dict[str, BaseAgent],
+    planner: Any,
+    audit_fn: Any | None = None,
+) -> WorkflowState:
+    """Planner-driven workflow: LLM builds an execution plan, then we run it.
+
+    Phase 1 — Planner analyzes the user message and produces an ordered list
+    of agent steps (handles compound intents like preference + order).
+    Phase 2 — Execute each step in the plan sequentially.
+    """
+    # Phase 1: plan
+    available = {k for k in agent_registry if k != "orchestrator"}
+    plan_result = await planner.plan(state, available)
+
+    # Phase 2: execute the plan
+    plan_steps = plan_result.get("plan", [])
+    flow_steps = [
+        {"name": step.get("reason", step["agent"]), "agent": step["agent"]} for step in plan_steps
+    ]
+    flow_def: dict[str, Any] = {"steps": flow_steps}
+
+    state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
+
+    return state
+
+
 def get_steps_from(flow_def: dict[str, Any], *, start_after: str) -> list[dict[str, Any]]:
     """Get remaining steps after a given step name (for resume after approval)."""
     steps: list[dict[str, Any]] = flow_def["steps"]

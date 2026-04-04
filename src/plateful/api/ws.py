@@ -1,12 +1,13 @@
 """WebSocket handler for real-time chat with the catering agent.
 
 Provides a persistent connection per user session. Each message goes
-through the adaptive orchestrator and streams back step-by-step progress
-plus the final result.
+through the planner-driven orchestrator and streams back step-by-step
+progress plus the final result.
 
 Protocol (JSON over WS):
   Client -> Server:  {"message": "...", "user_id": "...", "session_id": "..."}
-  Server -> Client:  {"type": "step",   "step": "understand", "agent": "orchestrator"}
+  Server -> Client:  {"type": "step",   "step": "plan", "agent": "planner"}
+                     {"type": "step",   "step": "<reason>", "agent": "<agent>"}
                      {"type": "result", "intent": "...", ...}
                      {"type": "error",  "detail": "..."}
 """
@@ -16,14 +17,14 @@ from typing import Any
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 
-from plateful.core.flow_router import get_flow_for_intent
+from plateful.agents.planner import PlannerAgent
 from plateful.core.orchestrator import run_workflow
 from plateful.core.workflow import WorkflowState
 
 logger = structlog.get_logger()
 
 
-async def websocket_chat(ws: WebSocket, registry: dict[str, Any]) -> None:
+async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: PlannerAgent) -> None:
     """Handle a single WebSocket chat session."""
     await ws.accept()
 
@@ -47,22 +48,20 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any]) -> None:
             )
 
             try:
-                # Phase 1: classify intent
-                intent_agent = registry.get("orchestrator")
-                if intent_agent:
-                    await ws.send_json(
-                        {"type": "step", "step": "understand", "agent": "orchestrator"}
-                    )
-                    state = await intent_agent.run(state)
+                # Phase 1: plan
+                await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
+                available = {k for k in registry}
+                plan_result = await planner.plan(state, available)
 
-                # Phase 2: route and execute remaining steps
-                available = set(registry.keys())
-                flow = get_flow_for_intent(state.intent, available)
-                remaining_steps = [s for s in flow["steps"] if s["name"] != "understand"]
-                remaining_flow = {"steps": remaining_steps}
+                # Phase 2: execute plan
+                plan_steps = plan_result.get("plan", [])
+                flow_steps = [
+                    {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
+                    for step in plan_steps
+                ]
+                flow_def: dict[str, Any] = {"steps": flow_steps}
 
-                # Audit callback that streams step progress to the client.
-                # Signature must match run_workflow's audit_fn(**kwargs) call.
+                # Audit callback that streams step progress to the client
                 def make_audit_fn(websocket: WebSocket):  # type: ignore[no-untyped-def]
                     async def _audit(**kwargs: Any) -> None:
                         step = kwargs.get("step", "")
@@ -71,9 +70,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any]) -> None:
 
                     return _audit
 
-                state = await run_workflow(
-                    remaining_flow, state, registry, audit_fn=make_audit_fn(ws)
-                )
+                state = await run_workflow(flow_def, state, registry, audit_fn=make_audit_fn(ws))
 
                 # Build result payload
                 result: dict[str, Any] = {

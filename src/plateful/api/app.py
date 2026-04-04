@@ -11,14 +11,14 @@ from mem0 import MemoryClient
 from pydantic import BaseModel
 
 from plateful.agents.execution import ExecutionAgent
-from plateful.agents.intent import IntentAgent
 from plateful.agents.learning import LearningAgent
 from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
+from plateful.agents.planner import PlannerAgent
 from plateful.agents.recommendation import RecommendationAgent
 from plateful.core.config import settings
 from plateful.core.mem0_client import get_all_memories, get_mem0_client, search_memories
-from plateful.core.orchestrator import run_adaptive_workflow
+from plateful.core.orchestrator import run_planned_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
 
@@ -46,20 +46,24 @@ class ChatResponse(BaseModel):
     user_profile: dict[str, Any]
 
 
+def _get_claude_client() -> anthropic.AsyncAnthropic | None:
+    if settings.anthropic_api_key:
+        return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return None
+
+
+def _build_planner(claude_client: anthropic.AsyncAnthropic | None) -> PlannerAgent:
+    if claude_client:
+        return PlannerAgent(mode="llm", anthropic_client=claude_client)
+    return PlannerAgent(mode="keyword")
+
+
 def _build_agent_registry() -> dict[str, Any]:
     """Build agent registry with available agents."""
-    # Create Claude client if API key is configured
-    claude_client = None
-    if settings.anthropic_api_key:
-        claude_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-    intent_agent = (
-        IntentAgent(mode="llm", anthropic_client=claude_client) if claude_client else IntentAgent()
-    )
+    claude_client = _get_claude_client()
 
     # Memory + Learning agents (require Mem0 API key)
     registry: dict[str, Any] = {
-        "orchestrator": intent_agent,
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
         "execution": ExecutionAgent(),
@@ -79,10 +83,10 @@ async def health() -> dict[str, str]:
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """Process a user message through the adaptive orchestrator pipeline.
+    """Process a user message through the planner-driven orchestrator.
 
-    Phase 1: classify intent.
-    Phase 2: route to the appropriate flow based on intent.
+    Phase 1: Planner builds an execution plan (handles compound intents).
+    Phase 2: Execute the plan sequentially.
     """
     state = WorkflowState(
         user_id=request.user_id,
@@ -91,8 +95,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )
 
     registry = _build_agent_registry()
+    planner = _build_planner(_get_claude_client())
 
-    state = await run_adaptive_workflow(state, registry)
+    state = await run_planned_workflow(state, registry, planner)
 
     return ChatResponse(
         intent=state.intent,
@@ -158,7 +163,8 @@ from plateful.api.ws import websocket_chat  # noqa: E402
 @app.websocket("/ws/chat")
 async def ws_chat_endpoint(ws: WebSocket) -> None:
     registry = _build_agent_registry()
-    await websocket_chat(ws, registry)
+    planner = _build_planner(_get_claude_client())
+    await websocket_chat(ws, registry, planner)
 
 
 @app.get("/")
