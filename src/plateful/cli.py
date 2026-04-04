@@ -115,9 +115,7 @@ async def chat_loop() -> None:
             elif status == "pending_approval":
                 print(f"\n  Order #{order_id} is pending approval: {item_names}")
             elif status == "blocked":
-                print(
-                    f"\n  Order blocked: {order.get('reason', 'policy violation')}"
-                )
+                print(f"\n  Order blocked: {order.get('reason', 'policy violation')}")
 
         if state.intent == "declare_preference" and not state.recommendation_text:
             print("\n  Got it, I'll remember that!")
