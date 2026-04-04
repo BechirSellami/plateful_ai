@@ -10,7 +10,7 @@ Falls back to keyword-based intent classification when no LLM is available.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import anthropic
 import structlog
@@ -60,11 +60,22 @@ Rules:
 - "memory" should come before "menu" or "recommendation" (preferences inform filtering).
 - "execution" requires the user to have explicitly chosen an item. Do NOT add execution \
 for vague requests like "I want chicken" — that needs recommendation first.
-- If the user is ONLY stating a preference/allergy (not ordering), plan just "learning".
-- If the user wants recommendations, plan: memory → menu → recommendation.
-- If the user confirms a specific item to order, plan: execution → learning.
-- If the message combines preference + order, plan: memory → menu → execution → learning.
-- If the message combines preference + wanting suggestions, plan: memory → menu → recommendation → learning.
+
+PREFERENCE DETECTION — always include "learning" when ANY of these appear:
+- "I love …", "I like …", "I enjoy …", "I prefer …", "my favourite …"
+- "I'm allergic …", "I'm vegetarian/vegan", "I don't eat …", "I avoid …"
+- "I hate …", "I can't have …", "no nuts", "gluten-free for me"
+A preference can appear ALONGSIDE another request. Look for it even if the main \
+request is a recommendation or order.
+
+Flow patterns:
+- Preference ONLY (no order or rec request): "learning".
+- Recommendation ONLY (no preference stated): memory → menu → recommendation.
+- Preference + recommendation (e.g. "I love spicy food, what do you recommend?"): \
+memory → menu → recommendation → learning.
+- Confirm a specific item: execution → learning.
+- Preference + order: memory → menu → execution → learning.
+- Preference + vague order (needs suggestions first): memory → menu → recommendation → learning.
 
 Also extract:
 - "intent": the PRIMARY intent (order_meal, confirm_order, get_recommendation, \
@@ -186,10 +197,31 @@ class PlannerAgent:
 
     # --- Keyword planning (fallback) ------------------------------------------
 
+    # Patterns that signal a preference statement
+    _PREFERENCE_SIGNALS: ClassVar[list[str]] = [
+        "i love",
+        "i like",
+        "i enjoy",
+        "i prefer",
+        "i hate",
+        "i avoid",
+        "i can't have",
+        "i don't eat",
+        "allergic",
+        "allergy",
+        "vegetarian",
+        "vegan",
+        "gluten-free",
+        "my favourite",
+        "my favorite",
+    ]
+
     def _plan_keyword(self, message: str, available_agents: set[str]) -> dict[str, Any]:
         """Deterministic planning using keyword matching.
 
-        Mirrors the old IntentAgent + flow_router behavior.
+        Detects compound intents: if the message contains a preference signal
+        AND another intent (recommendation, order), the learning agent is
+        appended to persist the preference.
         """
         from plateful.agents.intent import IntentAgent
         from plateful.core.flow_router import get_flow_for_intent
@@ -198,6 +230,10 @@ class PlannerAgent:
         agent = IntentAgent(mode="keyword")
         intent = agent._classify_keyword(message)
         constraints = agent._extract_constraints(message)
+
+        # Detect embedded preference
+        msg_lower = message.lower()
+        has_preference = any(sig in msg_lower for sig in self._PREFERENCE_SIGNALS)
 
         # Map to plan via the existing flow router
         flow = get_flow_for_intent(intent, available_agents)
@@ -209,5 +245,14 @@ class PlannerAgent:
             for s in steps
             if s["name"] != "understand" and s["agent"] in available_agents
         ]
+
+        # If a preference is embedded alongside a non-preference intent, append learning
+        if (
+            has_preference
+            and intent != "declare_preference"
+            and "learning" in available_agents
+            and not any(s["agent"] == "learning" for s in plan)
+        ):
+            plan.append({"agent": "learning", "reason": "Persist user preference"})
 
         return {"intent": intent, "constraints": constraints, "plan": plan}
