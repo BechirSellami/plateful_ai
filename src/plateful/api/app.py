@@ -155,6 +155,33 @@ async def delete_memory(user_id: str, memory_id: str) -> dict[str, str]:
     return {"status": "deleted", "memory_id": memory_id}
 
 
+# --- Feedback / Scoring -------------------------------------------------------
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    score: float
+    comment: str = ""
+
+
+@app.post("/api/feedback")
+async def submit_feedback(request: FeedbackRequest) -> dict[str, str]:
+    """Submit user feedback for a trace (sent to Langfuse if configured)."""
+    from plateful.core.observability import get_langfuse
+
+    client = get_langfuse()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Langfuse is not configured")
+
+    client.score(
+        trace_id=request.trace_id,
+        name="user_feedback",
+        value=request.score,
+        comment=request.comment,
+    )
+    return {"status": "ok", "trace_id": request.trace_id}
+
+
 # --- WebSocket + UI ----------------------------------------------------------
 
 from plateful.api.ws import websocket_chat  # noqa: E402

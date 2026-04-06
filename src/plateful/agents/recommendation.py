@@ -70,7 +70,7 @@ class RecommendationAgent:
         recommendation_text = None
         if self._client and settings.anthropic_api_key:
             recommendation_text = await self._generate_llm_recommendation(
-                top_items, profile, constraints, user_message=user_message
+                top_items, profile, constraints, user_message=user_message, state=state
             )
 
         # If no LLM, use deterministic fallback
@@ -98,19 +98,43 @@ class RecommendationAgent:
         constraints: dict[str, Any],
         *,
         user_message: str = "",
+        state: WorkflowState | None = None,
     ) -> str | None:
         """Use Claude to generate a natural-language recommendation."""
         try:
+            from plateful.core.observability import null_llm_trace, trace_llm_call
+
             prompt = format_recommendations_prompt(
                 items, profile, constraints, user_message=user_message
             )
 
-            response = await self._client.messages.create(  # type: ignore[union-attr]
-                model="claude-sonnet-4-20250514",
-                system=RECOMMENDATION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=512,
-            )
+            # Get parent span for generation tracing
+            tracing = getattr(state, "_tracing", None) if state else None
+            parent = tracing.trace if tracing else None
+            model = "claude-sonnet-4-20250514"
+
+            if parent is not None:
+                gen_ctx = trace_llm_call(
+                    parent, name="recommendation.llm", model=model, input_data=prompt
+                )
+            else:
+                gen_ctx = null_llm_trace()
+
+            async with gen_ctx as gen:
+                response = await self._client.messages.create(  # type: ignore[union-attr]
+                    model=model,
+                    system=RECOMMENDATION_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=512,
+                )
+                gen.end(
+                    output=response.content[0].text if response.content else "",
+                    usage={
+                        "input": response.usage.input_tokens,
+                        "output": response.usage.output_tokens,
+                        "unit": "TOKENS",
+                    },
+                )
 
             for block in response.content:
                 if block.type == "text":

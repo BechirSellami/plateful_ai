@@ -80,21 +80,49 @@ async def claude_tool_loop(
     tools: list[Callable[..., Any]],
     model: str = "claude-sonnet-4-20250514",
     max_iterations: int = 10,
+    tracing_parent: Any = None,
 ) -> Any:
-    """Run a tool-use loop with Claude until it returns a final text response."""
+    """Run a tool-use loop with Claude until it returns a final text response.
+
+    If *tracing_parent* (a Langfuse span or trace) is provided, each LLM
+    iteration is recorded as a generation with token usage.
+    """
+    from plateful.core.observability import null_llm_trace, trace_llm_call
+
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": json.dumps(context, default=str)},
     ]
     tool_defs = [to_claude_tool_schema(t) for t in tools]
 
     for iteration in range(max_iterations):
-        response = await client.messages.create(
-            model=model,
-            system=system,
-            messages=messages,  # type: ignore[arg-type]
-            tools=tool_defs,  # type: ignore[arg-type]
-            max_tokens=2048,
-        )
+        if tracing_parent is not None:
+            gen_ctx = trace_llm_call(
+                tracing_parent,
+                name=f"tool_loop.iteration_{iteration}",
+                model=model,
+                input_data=messages[-1],
+            )
+        else:
+            gen_ctx = null_llm_trace()
+
+        async with gen_ctx as gen:
+            response = await client.messages.create(
+                model=model,
+                system=system,
+                messages=messages,  # type: ignore[arg-type]
+                tools=tool_defs,  # type: ignore[arg-type]
+                max_tokens=2048,
+            )
+            gen.end(
+                output=response.content[0].text
+                if response.content and response.content[0].type == "text"
+                else str(response.stop_reason),
+                usage={
+                    "input": response.usage.input_tokens,
+                    "output": response.usage.output_tokens,
+                    "unit": "TOKENS",
+                },
+            )
 
         if response.stop_reason == "end_turn":
             for block in response.content:

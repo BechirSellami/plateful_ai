@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Mem0 Cloud
     mem0_api_key: str = ""
 
+    # Langfuse (observability)
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

@@ -135,7 +135,7 @@ class PlannerAgent:
             user_message = state.messages[-1].get("content", "")
 
         if self.mode == "llm" and self.anthropic_client is not None:
-            result = await self._plan_llm(user_message, available_agents)
+            result = await self._plan_llm(user_message, available_agents, state=state)
         else:
             result = self._plan_keyword(user_message, available_agents)
 
@@ -157,17 +157,45 @@ class PlannerAgent:
 
     # --- LLM planning ---------------------------------------------------------
 
-    async def _plan_llm(self, message: str, available_agents: set[str]) -> dict[str, Any]:
+    async def _plan_llm(
+        self,
+        message: str,
+        available_agents: set[str],
+        *,
+        state: WorkflowState | None = None,
+    ) -> dict[str, Any]:
         """Use Claude to build an execution plan. Falls back to keyword on failure."""
         try:
+            from plateful.core.observability import null_llm_trace, trace_llm_call
+
             system_prompt = _build_system_prompt(available_agents)
 
-            response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
-                model=self.model,
-                system=system_prompt,
-                messages=[{"role": "user", "content": message}],
-                max_tokens=512,
-            )
+            # Get the parent span for LLM generation tracing
+            tracing = getattr(state, "_tracing", None) if state else None
+            parent = tracing.trace if tracing else None
+
+            if parent is not None:
+                gen_ctx = trace_llm_call(
+                    parent, name="planner.llm", model=self.model, input_data=message
+                )
+            else:
+                gen_ctx = null_llm_trace()
+
+            async with gen_ctx as gen:
+                response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
+                    model=self.model,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": message}],
+                    max_tokens=512,
+                )
+                gen.end(
+                    output=response.content[0].text,  # type: ignore[union-attr]
+                    usage={
+                        "input": response.usage.input_tokens,
+                        "output": response.usage.output_tokens,
+                        "unit": "TOKENS",
+                    },
+                )
 
             text = response.content[0].text  # type: ignore[union-attr]
             parsed = json.loads(text)

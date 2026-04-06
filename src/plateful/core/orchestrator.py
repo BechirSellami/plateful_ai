@@ -5,6 +5,7 @@ from typing import Any
 import structlog
 
 from plateful.core.flow_router import get_flow_for_intent
+from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.workflow import BaseAgent, WorkflowState
 
 logger = structlog.get_logger()
@@ -84,13 +85,15 @@ async def run_workflow(
 
         logger.info("step_start", step=step_name, agent=agent_name, trace_id=state.trace_id)
 
-        # Dispatch
-        if step.get("async"):
-            task = asyncio.create_task(agent.run(state))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-        else:
-            state = await agent.run(state)
+        # Dispatch with observability span
+        tracing: TracingContext | None = getattr(state, "_tracing", None)
+        with trace_agent_step(tracing, agent_name=agent_name, step_name=step_name):
+            if step.get("async"):
+                task = asyncio.create_task(agent.run(state))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
+            else:
+                state = await agent.run(state)
 
         # Post-step safety hooks
         if step.get("post_check"):
@@ -157,18 +160,31 @@ async def run_planned_workflow(
     of agent steps (handles compound intents like preference + order).
     Phase 2 — Execute each step in the plan sequentially.
     """
-    # Phase 1: plan
-    available = {k for k in agent_registry if k != "orchestrator"}
-    plan_result = await planner.plan(state, available)
+    # Create observability trace for this request
+    tracing = TracingContext.create(
+        trace_id=state.trace_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+    )
+    state._tracing = tracing  # type: ignore[attr-defined]
 
-    # Phase 2: execute the plan
-    plan_steps = plan_result.get("plan", [])
-    flow_steps = [
-        {"name": step.get("reason", step["agent"]), "agent": step["agent"]} for step in plan_steps
-    ]
-    flow_def: dict[str, Any] = {"steps": flow_steps}
+    try:
+        # Phase 1: plan (traced as a span)
+        with trace_agent_step(tracing, agent_name="planner", step_name="plan"):
+            available = {k for k in agent_registry if k != "orchestrator"}
+            plan_result = await planner.plan(state, available)
 
-    state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
+        # Phase 2: execute the plan
+        plan_steps = plan_result.get("plan", [])
+        flow_steps = [
+            {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
+            for step in plan_steps
+        ]
+        flow_def: dict[str, Any] = {"steps": flow_steps}
+
+        state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
+    finally:
+        tracing.flush()
 
     return state
 

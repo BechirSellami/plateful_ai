@@ -18,6 +18,7 @@ import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 
 from plateful.agents.planner import PlannerAgent
+from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.orchestrator import run_workflow
 from plateful.core.workflow import WorkflowState
 
@@ -48,10 +49,19 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
             )
 
             try:
+                # Attach observability trace
+                tracing = TracingContext.create(
+                    trace_id=state.trace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                state._tracing = tracing  # type: ignore[attr-defined]
+
                 # Phase 1: plan
                 await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
-                available = {k for k in registry}
-                plan_result = await planner.plan(state, available)
+                with trace_agent_step(tracing, agent_name="planner", step_name="plan"):
+                    available = {k for k in registry}
+                    plan_result = await planner.plan(state, available)
 
                 # Phase 2: execute plan
                 plan_steps = plan_result.get("plan", [])
@@ -71,6 +81,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     return _audit
 
                 state = await run_workflow(flow_def, state, registry, audit_fn=make_audit_fn(ws))
+                tracing.flush()
 
                 # Build result payload
                 result: dict[str, Any] = {
