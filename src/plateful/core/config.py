@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: Any) -> None:
         """Fill in fields that the shell env set to empty but .env has a value for."""
-        for field_name in self.model_fields:
+        for field_name in type(self).model_fields:
             current = getattr(self, field_name)
             env_key = field_name.upper()
             if current == "" and env_key in _dotenv_values:
