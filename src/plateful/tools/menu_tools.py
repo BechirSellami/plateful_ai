@@ -32,23 +32,31 @@ async def get_menu(
 def check_allergens(
     items: list[dict[str, Any]],
     user_allergens: list[str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Filter out items containing any of the user's declared allergens.
 
     This is a deterministic safety filter — never delegated to LLM reasoning.
+
+    Returns:
+        A tuple of (safe_items, removed_items). Each removed item gets a
+        ``matched_allergens`` key listing which allergens caused removal.
     """
     if not user_allergens:
-        return items
+        return items, []
 
     allergen_set = {a.lower() for a in user_allergens}
-    safe_items = []
+    safe_items: list[dict[str, Any]] = []
+    removed_items: list[dict[str, Any]] = []
 
     for item in items:
         item_allergens = {a.lower() for a in item.get("allergens", [])}
-        if not item_allergens & allergen_set:
+        matched = item_allergens & allergen_set
+        if matched:
+            removed_items.append({**item, "matched_allergens": sorted(matched)})
+        else:
             safe_items.append(item)
 
-    return safe_items
+    return safe_items, removed_items
 
 
 def filter_by_availability(

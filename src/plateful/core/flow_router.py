@@ -64,6 +64,7 @@ INTENT_FLOWS: dict[str, list[dict[str, Any]]] = {
         STEP_RETRIEVE,
         STEP_RECOMMEND,
     ],
+    "out_of_scope": [],
 }
 
 DEFAULT_FLOW: list[dict[str, Any]] = [

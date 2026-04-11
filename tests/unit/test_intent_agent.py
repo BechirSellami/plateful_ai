@@ -40,8 +40,12 @@ class TestIntentAgentKeyword:
         result = await IntentAgent().run(_make_state("I'm allergic to peanuts"))
         assert result.intent == "declare_preference"
 
-    async def test_defaults_to_recommendation(self) -> None:
+    async def test_defaults_to_out_of_scope_for_unrelated(self) -> None:
         result = await IntentAgent().run(_make_state("hello"))
+        assert result.intent == "out_of_scope"
+
+    async def test_defaults_to_recommendation_for_food(self) -> None:
+        result = await IntentAgent().run(_make_state("anything healthy?"))
         assert result.intent == "get_recommendation"
 
     async def test_extracts_budget_constraint(self) -> None:
@@ -63,7 +67,7 @@ class TestIntentAgentKeyword:
     async def test_handles_empty_messages(self) -> None:
         state = WorkflowState(user_id="emp_123", session_id="s")
         result = await IntentAgent().run(state)
-        assert result.intent == "get_recommendation"
+        assert result.intent == "out_of_scope"
 
     async def test_preserves_existing_constraints(self) -> None:
         result = await IntentAgent().run(

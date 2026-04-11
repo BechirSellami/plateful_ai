@@ -2,7 +2,7 @@
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -360,6 +360,7 @@ class TestRunPlannedWorkflow:
         planner = PlannerAgent(mode="llm", anthropic_client=client)
         state = _make_state("I love tofu. I'll have it today")
 
-        await run_planned_workflow(state, registry, planner)
+        with patch("plateful.core.observability.get_langfuse", return_value=None):
+            await run_planned_workflow(state, registry, planner)
 
         assert call_order == ["memory", "menu", "execution", "learning"]

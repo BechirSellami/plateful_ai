@@ -262,6 +262,19 @@ async def run_planned_workflow(
                 },
             )
 
+        # Short-circuit for out-of-scope requests — skip execution entirely
+        if plan_result.get("intent") == "out_of_scope":
+            state.recommendation_text = (
+                "I'm sorry, that's outside what I can help with. "
+                "I'm your catering assistant \u2014 I can help you with:\n"
+                "\u2022 Browsing today's menu and getting meal recommendations\n"
+                "\u2022 Placing and tracking lunch orders\n"
+                "\u2022 Saving your dietary preferences and allergies\n"
+                "\u2022 Planning meals for the week\n\n"
+                "What would you like to eat today?"
+            )
+            return state
+
         # Phase 2: execute the plan
         plan_steps = plan_result.get("plan", [])
         flow_steps = [

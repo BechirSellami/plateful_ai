@@ -18,6 +18,7 @@ class WorkflowState:
     requires_approval: bool = False
     order: dict[str, Any] | None = None
     meal_plan: dict[str, dict[str, Any]] = field(default_factory=dict)
+    allergen_conflicts: list[dict[str, Any]] = field(default_factory=list)
     last_result: Any = None
     messages: list[dict[str, str]] = field(default_factory=list)
 

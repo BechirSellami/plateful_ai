@@ -69,37 +69,50 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     available = {k for k in registry}
                     plan_result = await planner.plan(state, available)
 
-                # Phase 2: execute plan
-                plan_steps = plan_result.get("plan", [])
-                flow_steps = [
-                    {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
-                    for step in plan_steps
-                ]
-                flow_def: dict[str, Any] = {"steps": flow_steps}
-
-                # Compose two audit callbacks: stream progress + persist to DB
-                async with async_session_factory() as db_session:
-                    _db_audit = make_audit_fn(db_session)
-
-                    def _make_combined(websocket: WebSocket, db_fn: Any) -> Any:
-                        async def _combined(**kwargs: Any) -> None:
-                            step = kwargs.get("step", "")
-                            agent = kwargs.get("agent", "")
-                            await websocket.send_json(
-                                {"type": "step", "step": step, "agent": agent}
-                            )
-                            await db_fn(**kwargs)
-
-                        return _combined
-
-                    state = await run_workflow(
-                        flow_def,
-                        state,
-                        registry,
-                        audit_fn=_make_combined(ws, _db_audit),
+                # Short-circuit for out-of-scope requests
+                if plan_result.get("intent") == "out_of_scope":
+                    state.recommendation_text = (
+                        "I'm sorry, that's outside what I can help with. "
+                        "I'm your catering assistant \u2014 I can help you with:\n"
+                        "\u2022 Browsing today's menu and getting meal recommendations\n"
+                        "\u2022 Placing and tracking lunch orders\n"
+                        "\u2022 Saving your dietary preferences and allergies\n"
+                        "\u2022 Planning meals for the week\n\n"
+                        "What would you like to eat today?"
                     )
-                    await db_session.commit()
-                tracing.flush()
+                    tracing.flush()
+                else:
+                    # Phase 2: execute plan
+                    plan_steps = plan_result.get("plan", [])
+                    flow_steps = [
+                        {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
+                        for step in plan_steps
+                    ]
+                    flow_def: dict[str, Any] = {"steps": flow_steps}
+
+                    # Compose two audit callbacks: stream progress + persist to DB
+                    async with async_session_factory() as db_session:
+                        _db_audit = make_audit_fn(db_session)
+
+                        def _make_combined(websocket: WebSocket, db_fn: Any) -> Any:
+                            async def _combined(**kwargs: Any) -> None:
+                                step = kwargs.get("step", "")
+                                agent = kwargs.get("agent", "")
+                                await websocket.send_json(
+                                    {"type": "step", "step": step, "agent": agent}
+                                )
+                                await db_fn(**kwargs)
+
+                            return _combined
+
+                        state = await run_workflow(
+                            flow_def,
+                            state,
+                            registry,
+                            audit_fn=_make_combined(ws, _db_audit),
+                        )
+                        await db_session.commit()
+                    tracing.flush()
 
                 # Build result payload
                 result: dict[str, Any] = {
@@ -121,6 +134,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     "recommendation_text": state.recommendation_text,
                     "order": state.order,
                     "user_profile": state.user_profile,
+                    "allergen_conflicts": state.allergen_conflicts or [],
                     "meal_plan": state.meal_plan or None,
                 }
 

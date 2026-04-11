@@ -94,9 +94,14 @@ When the user references swapping, replacing, changing, or updating items in the
 ALWAYS route to mealplan agent (intent: create_mealplan). Even if the user also states a \
 preference (e.g. "not a fan of tofu, swap it"), include BOTH mealplan AND learning.
 
+OUT-OF-SCOPE DETECTION:
+If the user's request has NOTHING to do with meals, food ordering, catering, dietary \
+preferences, or the service, return intent "out_of_scope" with an EMPTY plan. Examples: \
+"What's the weather?", "Write me a poem", "Help me with my taxes", "Tell me a joke".
+
 Also extract:
 - "intent": the PRIMARY intent (order_meal, confirm_order, get_recommendation, \
-declare_preference, create_mealplan, submit_mealplan, check_order_status, ask_question)
+declare_preference, create_mealplan, submit_mealplan, check_order_status, ask_question, out_of_scope)
 - "constraints": extracted details as a flat object. Keys: budget (int), dietary (string), \
 cuisine (string), meal_type (string), selected_item (string), preference (string).
 
@@ -227,6 +232,13 @@ class PlannerAgent:
                 ).end()
 
             text = response.content[0].text  # type: ignore[union-attr]
+            # Strip markdown code fences that Claude sometimes adds
+            text = text.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
             parsed = json.loads(text)
 
             # Validate and sanitize
@@ -243,6 +255,8 @@ class PlannerAgent:
             plan = [s for s in plan if isinstance(s, dict) and s.get("agent") in available_agents]
 
             if not plan:
+                if intent == "out_of_scope":
+                    return {"intent": "out_of_scope", "constraints": {}, "plan": []}
                 # LLM returned empty plan — fall back to keyword
                 return self._plan_keyword(message, available_agents, state=state)
 
