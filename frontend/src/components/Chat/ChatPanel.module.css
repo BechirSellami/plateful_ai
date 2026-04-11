@@ -54,43 +54,6 @@
   border-bottom-left-radius: 4px;
 }
 
-/* Steps bar */
-.stepsBar {
-  max-width: 720px;
-  width: 100%;
-  margin: 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.stepChip {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 20px;
-  background: #fef3c7;
-  color: #92400e;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  animation: fadeIn 0.2s ease;
-}
-
-.stepChip.done {
-  background: var(--primary-light);
-  color: var(--primary);
-}
-
-.spinner {
-  width: 10px;
-  height: 10px;
-  border: 2px solid #92400e;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.6s linear infinite;
-}
-
 /* Intent badge */
 .intentBadge {
   display: inline-block;
@@ -198,8 +161,4 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }

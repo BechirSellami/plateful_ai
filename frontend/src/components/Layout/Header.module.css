@@ -1,7 +1,7 @@
 .header {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 12px 20px;
+  background: var(--header-bg);
+  border-bottom: none;
+  padding: 14px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -22,6 +22,7 @@
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.3px;
+  color: var(--header-text);
 }
 
 .right {
@@ -39,7 +40,7 @@
 .label {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: #9a938d;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -47,10 +48,12 @@
 .input {
   font-size: 13px;
   padding: 5px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid #3a3632;
   border-radius: 6px;
   width: 130px;
   outline: none;
+  background: #2a2725;
+  color: var(--header-text);
   transition: border-color 0.15s;
 }
 
@@ -67,5 +70,5 @@
 }
 
 .dot.connected {
-  background: #22c55e;
+  background: #4ade80;
 }
