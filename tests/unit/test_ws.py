@@ -1,6 +1,8 @@
 """Unit tests for the WebSocket chat handler."""
 
+from contextlib import asynccontextmanager
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -49,6 +51,18 @@ class FakeAgent:
 
 def _keyword_planner() -> PlannerAgent:
     return PlannerAgent(mode="keyword")
+
+
+@pytest.fixture(autouse=True)
+def _mock_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent WebSocket tests from hitting real DB or Langfuse."""
+
+    @asynccontextmanager
+    async def _fake_session():
+        yield AsyncMock()
+
+    monkeypatch.setattr("plateful.api.ws.async_session_factory", lambda: _fake_session())
+    monkeypatch.setattr("plateful.core.observability.get_langfuse", lambda: None)
 
 
 @pytest.mark.unit

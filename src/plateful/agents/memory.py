@@ -12,7 +12,7 @@ logger = structlog.get_logger()
 class MemoryAgent:
     """Read path: retrieves user preferences from Mem0 at query time.
 
-    Enriches the workflow state with the user's preference profile
+    Enriches the workflow state with the user's profile
     by searching Mem0 for relevant memories based on the current context.
     """
 
@@ -21,6 +21,7 @@ class MemoryAgent:
 
     async def run(self, state: WorkflowState) -> WorkflowState:
         query = self._build_context_query(state)
+        logger.info("memory_agent_query", query=query, trace_id=state.trace_id, user_id=state.user_id, intent=state.intent)
 
         memories = await search_memories(
             self._client,

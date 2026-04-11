@@ -36,6 +36,8 @@ class LearningAgent:
             )
             state.last_result = {"status": "skipped", "reason": "no events to learn from"}
             return state
+        else:
+            logger.info("Learning_agent_events", trace_id=state.trace_id, events=events)
 
         summary = summarize_session_events(events)
 

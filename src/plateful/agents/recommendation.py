@@ -108,14 +108,13 @@ class RecommendationAgent:
                 items, profile, constraints, user_message=user_message
             )
 
-            # Get parent span for generation tracing
+            # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None
-            parent = tracing.trace if tracing else None
             model = "claude-sonnet-4-20250514"
 
-            if parent is not None:
+            if tracing is not None and tracing.is_active:
                 gen_ctx = trace_llm_call(
-                    parent, name="recommendation.llm", model=model, input_data=prompt
+                    tracing, name="recommendation.llm", model=model, input_data=prompt
                 )
             else:
                 gen_ctx = null_llm_trace()
@@ -127,14 +126,13 @@ class RecommendationAgent:
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=512,
                 )
-                gen.end(
+                gen.update(
                     output=response.content[0].text if response.content else "",
-                    usage={
+                    usage_details={
                         "input": response.usage.input_tokens,
                         "output": response.usage.output_tokens,
-                        "unit": "TOKENS",
                     },
-                )
+                ).end()
 
             for block in response.content:
                 if block.type == "text":

@@ -170,13 +170,12 @@ class PlannerAgent:
 
             system_prompt = _build_system_prompt(available_agents)
 
-            # Get the parent span for LLM generation tracing
+            # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None
-            parent = tracing.trace if tracing else None
 
-            if parent is not None:
+            if tracing is not None and tracing.is_active:
                 gen_ctx = trace_llm_call(
-                    parent, name="planner.llm", model=self.model, input_data=message
+                    tracing, name="planner.llm", model=self.model, input_data=message
                 )
             else:
                 gen_ctx = null_llm_trace()
@@ -188,14 +187,13 @@ class PlannerAgent:
                     messages=[{"role": "user", "content": message}],
                     max_tokens=512,
                 )
-                gen.end(
+                gen.update(
                     output=response.content[0].text,  # type: ignore[union-attr]
-                    usage={
+                    usage_details={
                         "input": response.usage.input_tokens,
                         "output": response.usage.output_tokens,
-                        "unit": "TOKENS",
                     },
-                )
+                ).end()
 
             text = response.content[0].text  # type: ignore[union-attr]
             parsed = json.loads(text)
@@ -220,7 +218,7 @@ class PlannerAgent:
             return {"intent": intent, "constraints": constraints, "plan": plan}
 
         except Exception:
-            logger.warning("llm_planner_fallback", reason="api_or_parse_error")
+            logger.warning("llm_planner_fallback", reason="api_or_parse_error", exc_info=True)
             return self._plan_keyword(message, available_agents)
 
     # --- Keyword planning (fallback) ------------------------------------------

@@ -1,4 +1,4 @@
-"""Langfuse observability integration.
+"""Langfuse observability integration (v4 SDK).
 
 Provides tracing for workflows, agent steps, and LLM calls. Uses the
 null-object pattern so instrumentation code is unconditional — when
@@ -6,7 +6,7 @@ Langfuse is not configured, every call is a silent no-op.
 
 Trace hierarchy per user message::
 
-    Trace (name="chat", user_id, session_id)
+    Trace (root span "chat")
       ├── Span "planner"
       │     └── Generation "planner.llm" (token usage)
       ├── Span "memory"
@@ -19,6 +19,7 @@ Trace hierarchy per user message::
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -66,6 +67,11 @@ def get_langfuse() -> Any:
     return _langfuse_client
 
 
+def _to_trace_id(uuid_str: str) -> str:
+    """Convert a UUID string to a 32-char lowercase hex Langfuse trace ID."""
+    return hashlib.md5(uuid_str.encode()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Null objects — absorb all method calls when Langfuse is off
 # ---------------------------------------------------------------------------
@@ -74,53 +80,34 @@ def get_langfuse() -> Any:
 class _NullSpan:
     """No-op span that mimics Langfuse span interface."""
 
-    def span(self, **kwargs: Any) -> _NullSpan:
-        return self
-
-    def generation(self, **kwargs: Any) -> _NullGeneration:
-        return _NullGeneration()
-
-    def end(self, **kwargs: Any) -> None:
-        pass
-
-    def update(self, **kwargs: Any) -> None:
-        pass
-
-    def score(self, **kwargs: Any) -> None:
-        pass
-
-
-class _NullGeneration:
-    """No-op generation that mimics Langfuse generation interface."""
-
-    def end(self, **kwargs: Any) -> None:
-        pass
-
-    def update(self, **kwargs: Any) -> None:
-        pass
-
-
-class _NullTrace:
-    """No-op trace that mimics Langfuse trace interface."""
-
-    def span(self, **kwargs: Any) -> _NullSpan:
-        return _NullSpan()
-
-    def generation(self, **kwargs: Any) -> _NullGeneration:
-        return _NullGeneration()
-
-    def update(self, **kwargs: Any) -> None:
-        pass
-
-    def score(self, **kwargs: Any) -> None:
-        pass
-
     @property
     def id(self) -> str:
         return ""
 
+    @property
+    def trace_id(self) -> str:
+        return ""
 
-_NULL_TRACE = _NullTrace()
+    def start_observation(self, **kwargs: Any) -> _NullSpan:
+        return self
+
+    def end(self, **kwargs: Any) -> _NullSpan:
+        return self
+
+    def update(self, **kwargs: Any) -> _NullSpan:
+        return self
+
+    def score(self, **kwargs: Any) -> None:
+        pass
+
+    def score_trace(self, **kwargs: Any) -> None:
+        pass
+
+
+class _NullGeneration(_NullSpan):
+    """No-op generation that mimics Langfuse generation interface."""
+
+
 _NULL_SPAN = _NullSpan()
 
 
@@ -130,10 +117,17 @@ _NULL_SPAN = _NullSpan()
 
 
 class TracingContext:
-    """Wraps a Langfuse trace and provides helpers for spans and generations."""
+    """Wraps a Langfuse root span and provides helpers for child observations.
 
-    def __init__(self, trace: Any) -> None:
-        self._trace = trace
+    In Langfuse v4, traces are implicit — created when the first
+    observation is started with a ``trace_context``. We create a root
+    span named "chat" as the parent of all agent step spans.
+    """
+
+    def __init__(self, *, client: Any, root_span: Any) -> None:
+        self._client = client
+        self._root_span = root_span  # LangfuseSpan or _NullSpan
+        self._trace_id = root_span.trace_id if hasattr(root_span, "trace_id") else ""
 
     @classmethod
     def create(
@@ -147,37 +141,69 @@ class TracingContext:
         """Create a tracing context. Returns a null context if Langfuse is off."""
         client = get_langfuse()
         if client is None:
-            return cls(trace=_NULL_TRACE)
+            return cls(client=None, root_span=_NULL_SPAN)
 
-        trace = client.trace(
-            id=trace_id,
+        from langfuse.types import TraceContext
+
+        lf_trace_id = _to_trace_id(trace_id)
+        tc = TraceContext(trace_id=lf_trace_id)
+
+        root_span = client.start_observation(
+            trace_context=tc,
             name=name,
-            user_id=user_id,
-            session_id=session_id,
+            as_type="span",
+            metadata={
+                "user_id": user_id,
+                "session_id": session_id,
+                "workflow_trace_id": trace_id,
+            },
         )
-        return cls(trace=trace)
-
-    @property
-    def trace(self) -> Any:
-        return self._trace
+        return cls(client=client, root_span=root_span)
 
     @property
     def is_active(self) -> bool:
-        return not isinstance(self._trace, _NullTrace)
+        return self._client is not None
 
     def span(self, *, name: str, metadata: dict[str, Any] | None = None) -> Any:
-        """Create a child span on the trace."""
-        return self._trace.span(name=name, metadata=metadata or {})
+        """Create a child span under the root span."""
+        if not self.is_active:
+            return _NULL_SPAN
+
+        return self._root_span.start_observation(
+            name=name,
+            as_type="span",
+            metadata=metadata or {},
+        )
+
+    def generation(self, *, name: str, model: str, input_data: Any = None) -> Any:
+        """Create a generation (LLM call) under the root span."""
+        if not self.is_active:
+            return _NullGeneration()
+
+        return self._root_span.start_observation(
+            name=name,
+            as_type="generation",
+            model=model,
+            input=input_data,
+        )
 
     def score(self, *, name: str, value: float, comment: str = "") -> None:
         """Attach a score to the trace."""
-        self._trace.score(name=name, value=value, comment=comment)
+        if not self.is_active:
+            return
+
+        self._root_span.score_trace(name=name, value=value, comment=comment)
+
+    def end(self) -> None:
+        """End the root span."""
+        if self.is_active:
+            self._root_span.end()
 
     def flush(self) -> None:
-        """Flush pending events to Langfuse."""
-        client = get_langfuse()
-        if client is not None:
-            client.flush()
+        """End root span and flush pending events to Langfuse."""
+        self.end()
+        if self._client is not None:
+            self._client.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +219,7 @@ async def null_llm_trace() -> AsyncIterator[_NullGeneration]:
 
 @asynccontextmanager
 async def trace_llm_call(
-    parent: Any,
+    tracing: TracingContext,
     *,
     name: str,
     model: str,
@@ -203,20 +229,16 @@ async def trace_llm_call(
 
     Usage::
 
-        async with trace_llm_call(span, name="planner.llm", model=model, input_data=msg) as gen:
+        async with trace_llm_call(tracing, name="planner.llm", model=model, input_data=msg) as gen:
             response = await client.messages.create(...)
-            gen.end(
-                output=response.content[0].text,
-                usage={"input": response.usage.input_tokens, "output": response.usage.output_tokens},
-            )
-
-    ``parent`` can be a Langfuse span, trace, or a null object.
+            gen.update(output=..., usage_details={...}).end()
     """
-    gen = parent.generation(name=name, model=model, input=input_data)
+    gen = tracing.generation(name=name, model=model, input_data=input_data)
     try:
         yield gen
     except Exception as exc:
-        gen.end(status_message=f"error: {exc}", level="ERROR")
+        gen.update(status_message=f"error: {exc}", level="ERROR")
+        gen.end()
         raise
 
 
@@ -229,11 +251,7 @@ async def trace_llm_call(
 def trace_agent_step(
     tracing: TracingContext | None, *, agent_name: str, step_name: str
 ) -> Iterator[Any]:
-    """Sync context-manager that opens/closes a span for an agent step.
-
-    Used in the orchestrator step loop. Yields the span object so callers
-    can attach child generations or metadata.
-    """
+    """Sync context-manager that opens/closes a span for an agent step."""
     if tracing is None:
         yield _NULL_SPAN
         return
@@ -242,7 +260,8 @@ def trace_agent_step(
     try:
         yield span
     except Exception as exc:
-        span.end(status_message=f"error: {exc}", level="ERROR")
+        span.update(status_message=f"error: {exc}", level="ERROR")
+        span.end()
         raise
     else:
         span.end()
