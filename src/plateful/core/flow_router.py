@@ -23,6 +23,7 @@ STEP_UNDERSTAND: dict[str, str] = {"name": "understand", "agent": "orchestrator"
 STEP_ENRICH: dict[str, str] = {"name": "enrich", "agent": "memory"}
 STEP_RETRIEVE: dict[str, str] = {"name": "retrieve", "agent": "menu"}
 STEP_RECOMMEND: dict[str, str] = {"name": "recommend", "agent": "recommendation"}
+STEP_MEALPLAN: dict[str, str] = {"name": "mealplan", "agent": "mealplan"}
 STEP_EXECUTE: dict[str, str] = {"name": "execute", "agent": "execution"}
 STEP_LEARN: dict[str, str] = {"name": "learn", "agent": "learning"}
 
@@ -49,7 +50,11 @@ INTENT_FLOWS: dict[str, list[dict[str, Any]]] = {
     "create_mealplan": [
         STEP_ENRICH,
         STEP_RETRIEVE,
-        STEP_RECOMMEND,
+        STEP_MEALPLAN,
+    ],
+    "submit_mealplan": [
+        STEP_EXECUTE,
+        STEP_LEARN,
     ],
     "check_order_status": [
         # Future: execution agent status lookup

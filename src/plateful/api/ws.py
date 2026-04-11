@@ -31,6 +31,9 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
     """Handle a single WebSocket chat session."""
     await ws.accept()
 
+    # Session-level state that persists across turns
+    session_meal_plan: dict[str, dict[str, Any]] = {}
+
     try:
         while True:
             data: dict[str, Any] = await ws.receive_json()
@@ -43,11 +46,12 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 await ws.send_json({"type": "error", "detail": "Empty message"})
                 continue
 
-            # Build state
+            # Build state, carrying forward the meal plan from prior turns
             state = WorkflowState(
                 user_id=user_id,
                 session_id=session_id,
                 messages=[{"role": "user", "content": message}],
+                meal_plan=dict(session_meal_plan),
             )
 
             try:
@@ -117,7 +121,12 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     "recommendation_text": state.recommendation_text,
                     "order": state.order,
                     "user_profile": state.user_profile,
+                    "meal_plan": state.meal_plan or None,
                 }
+
+                # Persist meal plan across turns
+                if state.meal_plan:
+                    session_meal_plan = dict(state.meal_plan)
 
                 await ws.send_json(result)
 
