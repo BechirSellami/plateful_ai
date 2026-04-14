@@ -21,7 +21,13 @@ class MemoryAgent:
 
     async def run(self, state: WorkflowState) -> WorkflowState:
         query = self._build_context_query(state)
-        logger.info("memory_agent_query", query=query, trace_id=state.trace_id, user_id=state.user_id, intent=state.intent)
+        logger.info(
+            "memory_agent_query",
+            query=query,
+            trace_id=state.trace_id,
+            user_id=state.user_id,
+            intent=state.intent,
+        )
 
         memories = await search_memories(
             self._client,

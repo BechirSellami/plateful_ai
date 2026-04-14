@@ -66,18 +66,14 @@ def _agent_output(agent_name: str, state: WorkflowState) -> dict[str, Any]:
     elif agent_name == "recommendation":
         return {
             "recommendations": [
-                {"name": r.get("name"), "score": r.get("score")}
-                for r in state.recommendations
+                {"name": r.get("name"), "score": r.get("score")} for r in state.recommendations
             ],
             "recommendation_text": (state.recommendation_text or "")[:500],
         }
     elif agent_name == "mealplan":
         meal_plan = getattr(state, "meal_plan", {})
         return {
-            "meal_plan": {
-                day: entry.get("name", "")
-                for day, entry in meal_plan.items()
-            },
+            "meal_plan": {day: entry.get("name", "") for day, entry in meal_plan.items()},
             "recommendation_text": (state.recommendation_text or "")[:500],
         }
     elif agent_name == "execution":
@@ -91,6 +87,7 @@ def _agent_output(agent_name: str, state: WorkflowState) -> dict[str, Any]:
 
     # Fallback: generic snapshot
     return {"last_result": str(state.last_result)[:300] if state.last_result else None}
+
 
 # Flow definition: declarative, data-driven workflow
 CATERING_FLOW: dict[str, Any] = {
@@ -255,7 +252,9 @@ async def run_planned_workflow(
             available = {k for k in agent_registry if k != "orchestrator"}
             plan_result = await planner.plan(state, available)
             plan_span.update(
-                input={"user_message": state.messages[-1].get("content", "") if state.messages else ""},
+                input={
+                    "user_message": state.messages[-1].get("content", "") if state.messages else ""
+                },
                 output={
                     "intent": plan_result.get("intent"),
                     "constraints": plan_result.get("constraints", {}),
