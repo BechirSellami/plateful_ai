@@ -7,7 +7,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { WsIncoming, WsResultEvent } from "../types/ws";
+import type {
+  AllergenConflict,
+  MealPlan,
+  RecommendationItem,
+  WsIncoming,
+  WsResultEvent,
+} from "../types/ws";
 import { useUser } from "./UserContext";
 import { useWs } from "./WsContext";
 
@@ -17,6 +23,9 @@ export interface ChatMessage {
   content: string;
   intent?: string | null;
   order?: WsResultEvent["order"];
+  recommendations?: RecommendationItem[];
+  allergen_conflicts?: AllergenConflict[];
+  meal_plan?: MealPlan | null;
   steps?: string[];
 }
 
@@ -56,8 +65,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const steps = [...pendingStepsRef.current, "done"];
         setPendingSteps([]);
 
+        // Build display text — cards are rendered separately for
+        // meal plans and recommendations; text is only for non-card content.
         let content = "";
-        if (data.recommendation_text) {
+        const hasRecCards = data.recommendations && data.recommendations.length > 0;
+        const hasMealPlan = data.meal_plan && Object.keys(data.meal_plan).length > 0;
+        if (hasMealPlan) {
+          content = "";
+        } else if (hasRecCards) {
+          // Show only allergen warning as companion text; cards handle the rest
+          content = buildAllergenWarningText(data.allergen_conflicts || []);
+        } else if (data.recommendation_text) {
           content = data.recommendation_text;
         } else if (data.intent === "declare_preference") {
           content = "Got it, I'll remember that for next time!";
@@ -79,6 +97,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             content,
             intent: data.intent,
             order: data.order,
+            recommendations: hasRecCards ? data.recommendations : undefined,
+            allergen_conflicts: data.allergen_conflicts,
+            meal_plan: data.meal_plan,
             steps,
           },
         ]);
@@ -126,4 +147,23 @@ export function useChat(): ChatState {
   const ctx = useContext(ChatContext);
   if (!ctx) throw new Error("useChat must be inside ChatProvider");
   return ctx;
+}
+
+/** Build a user-facing allergen warning string from conflict data. */
+function buildAllergenWarningText(conflicts: AllergenConflict[]): string {
+  if (!conflicts || conflicts.length === 0) return "";
+
+  const parts: string[] = [];
+  for (const c of conflicts) {
+    if (c.ingredient) {
+      const count = c.items_removed?.length ?? 0;
+      parts.push(
+        `**${c.ingredient}** is a ${c.allergen_group} allergen (${count} item${count !== 1 ? "s" : ""} removed)`
+      );
+    } else if (c.name) {
+      parts.push(`**${c.name}** contains ${c.matched_allergens.join(", ")}`);
+    }
+  }
+  if (parts.length === 0) return "";
+  return `**Heads up!** ${parts.join("; ")} — removed from your options because of your allergy on file. Here are some safe alternatives:`;
 }

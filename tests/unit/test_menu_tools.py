@@ -58,19 +58,24 @@ class TestCheckAllergens:
             {"name": "A", "allergens": ["dairy"]},
             {"name": "B", "allergens": ["soy"]},
         ]
-        result = check_allergens(items, ["dairy"])
-        assert len(result) == 1
-        assert result[0]["name"] == "B"
+        safe, removed = check_allergens(items, ["dairy"])
+        assert len(safe) == 1
+        assert safe[0]["name"] == "B"
+        assert len(removed) == 1
+        assert removed[0]["name"] == "A"
+        assert "dairy" in removed[0]["matched_allergens"]
 
     def test_no_allergens_returns_all(self) -> None:
         items = [{"name": "A", "allergens": ["dairy"]}]
-        result = check_allergens(items, [])
-        assert len(result) == 1
+        safe, removed = check_allergens(items, [])
+        assert len(safe) == 1
+        assert len(removed) == 0
 
     def test_case_insensitive(self) -> None:
         items = [{"name": "A", "allergens": ["Dairy"]}]
-        result = check_allergens(items, ["dairy"])
-        assert len(result) == 0
+        safe, removed = check_allergens(items, ["dairy"])
+        assert len(safe) == 0
+        assert len(removed) == 1
 
 
 @pytest.mark.unit

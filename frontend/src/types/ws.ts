@@ -20,22 +20,52 @@ export interface OrderPayload {
   total_usd?: number;
 }
 
+/** A single day entry in a meal plan. */
+export interface MealPlanEntry {
+  name: string;
+  price_usd: number | null;
+  category: string;
+  cuisine: string;
+  calories: number | null;
+  description: string;
+  old_item?: string;
+}
+
+/** Monday–Friday meal plan keyed by day name. */
+export type MealPlan = Record<string, MealPlanEntry>;
+
+/** A single recommendation item. */
+export interface RecommendationItem {
+  name: string;
+  price_usd: number;
+  category: string;
+  cuisine: string;
+  calories: number;
+  description: string;
+}
+
+/** An allergen conflict detected by the menu agent. */
+export interface AllergenConflict {
+  /** Present when the user mentioned an allergen ingredient directly. */
+  ingredient?: string;
+  allergen_group?: string;
+  items_removed?: string[];
+  /** Present when a specific menu item matched by name. */
+  name?: string;
+  matched_allergens: string[];
+}
+
 /** Final result from the server after a pipeline run. */
 export interface WsResultEvent {
   type: "result";
   intent: string | null;
   constraints: Record<string, unknown>;
   menu_items_count: number;
-  recommendations: {
-    name: string;
-    price_usd: number;
-    category: string;
-    cuisine: string;
-    calories: number;
-    description: string;
-  }[];
+  recommendations: RecommendationItem[];
   recommendation_text: string | null;
+  allergen_conflicts: AllergenConflict[];
   order: OrderPayload | null;
+  meal_plan: MealPlan | null;
   user_profile: Record<string, unknown>;
 }
 

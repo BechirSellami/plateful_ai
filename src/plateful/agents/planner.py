@@ -10,7 +10,7 @@ Falls back to keyword-based intent classification when no LLM is available.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import anthropic
 import structlog
@@ -33,6 +33,11 @@ AGENT_CATALOG: dict[str, str] = {
     "recommendation": (
         "Ranks menu items and generates personalised meal suggestions. "
         "Use after menu retrieval when the user wants suggestions or is deciding what to order."
+    ),
+    "mealplan": (
+        "Generates or edits a weekly meal plan (Monday-Friday). "
+        "Use when the user asks for a meal plan or wants to swap a day in their plan. "
+        "Requires menu items to be fetched first."
     ),
     "execution": (
         "Places a confirmed order. Use ONLY when the user has clearly chosen a "
@@ -76,10 +81,27 @@ memory → menu → recommendation → learning.
 - Confirm a specific item: execution → learning.
 - Preference + order: memory → menu → execution → learning.
 - Preference + vague order (needs suggestions first): memory → menu → recommendation → learning.
+- Create a meal plan: memory → menu → mealplan.
+- Swap a day in a meal plan: menu → mealplan (menu needed to resolve the new item).
+- Update/modify an existing meal plan (e.g. "update the meal plan with Pad Thai", \
+"swap the tofu for something else", "can we change Thursday?"): menu → mealplan.
+- Submit/confirm a meal plan (e.g. "submit my meal plan", "looks good, submit it", \
+"confirm the plan"): execution → learning.
+
+MEAL PLAN CONTEXT:
+{meal_plan_context}
+When the user references swapping, replacing, changing, or updating items in the meal plan, \
+ALWAYS route to mealplan agent (intent: create_mealplan). Even if the user also states a \
+preference (e.g. "not a fan of tofu, swap it"), include BOTH mealplan AND learning.
+
+OUT-OF-SCOPE DETECTION:
+If the user's request has NOTHING to do with meals, food ordering, catering, dietary \
+preferences, or the service, return intent "out_of_scope" with an EMPTY plan. Examples: \
+"What's the weather?", "Write me a poem", "Help me with my taxes", "Tell me a joke".
 
 Also extract:
 - "intent": the PRIMARY intent (order_meal, confirm_order, get_recommendation, \
-declare_preference, create_mealplan, check_order_status, ask_question)
+declare_preference, create_mealplan, submit_mealplan, check_order_status, ask_question, out_of_scope)
 - "constraints": extracted details as a flat object. Keys: budget (int), dietary (string), \
 cuisine (string), meal_type (string), selected_item (string), preference (string).
 
@@ -88,12 +110,21 @@ Respond ONLY with valid JSON:
 """
 
 
-def _build_system_prompt(available_agents: set[str]) -> str:
+def _build_system_prompt(
+    available_agents: set[str],
+    *,
+    meal_plan: dict[str, Any] | None = None,
+) -> str:
     """Build the planner system prompt with only the available agents."""
     descriptions = "\n".join(
         f"- **{name}**: {desc}" for name, desc in AGENT_CATALOG.items() if name in available_agents
     )
-    return PLANNER_SYSTEM_PROMPT.format(agent_descriptions=descriptions)
+    if meal_plan:
+        plan_lines = [f"  {day}: {entry.get('name', '—')}" for day, entry in meal_plan.items()]
+        context = "The user has an ACTIVE meal plan:\n" + "\n".join(plan_lines)
+    else:
+        context = "No active meal plan in this session."
+    return PLANNER_SYSTEM_PROMPT.format(agent_descriptions=descriptions, meal_plan_context=context)
 
 
 class PlannerAgent:
@@ -137,7 +168,7 @@ class PlannerAgent:
         if self.mode == "llm" and self.anthropic_client is not None:
             result = await self._plan_llm(user_message, available_agents, state=state)
         else:
-            result = self._plan_keyword(user_message, available_agents)
+            result = self._plan_keyword(user_message, available_agents, state=state)
 
         # Apply to state
         state.intent = result["intent"]
@@ -168,7 +199,8 @@ class PlannerAgent:
         try:
             from plateful.core.observability import null_llm_trace, trace_llm_call
 
-            system_prompt = _build_system_prompt(available_agents)
+            meal_plan = state.meal_plan if state else None
+            system_prompt = _build_system_prompt(available_agents, meal_plan=meal_plan or None)
 
             # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None
@@ -196,6 +228,13 @@ class PlannerAgent:
                 ).end()
 
             text = response.content[0].text  # type: ignore[union-attr]
+            # Strip markdown code fences that Claude sometimes adds
+            text = text.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
             parsed = json.loads(text)
 
             # Validate and sanitize
@@ -212,18 +251,48 @@ class PlannerAgent:
             plan = [s for s in plan if isinstance(s, dict) and s.get("agent") in available_agents]
 
             if not plan:
+                if intent == "out_of_scope":
+                    return {"intent": "out_of_scope", "constraints": {}, "plan": []}
                 # LLM returned empty plan — fall back to keyword
-                return self._plan_keyword(message, available_agents)
+                return self._plan_keyword(message, available_agents, state=state)
 
             return {"intent": intent, "constraints": constraints, "plan": plan}
 
         except Exception:
             logger.warning("llm_planner_fallback", reason="api_or_parse_error", exc_info=True)
-            return self._plan_keyword(message, available_agents)
+            return self._plan_keyword(message, available_agents, state=state)
 
     # --- Keyword planning (fallback) ------------------------------------------
 
-    def _plan_keyword(self, message: str, available_agents: set[str]) -> dict[str, Any]:
+    _MEALPLAN_SUBMIT_SIGNALS: ClassVar[list[str]] = [
+        "submit",
+        "confirm",
+        "finalize",
+        "approve",
+        "looks good",
+        "go ahead",
+        "place the order",
+        "order the plan",
+    ]
+
+    _MEALPLAN_SWAP_SIGNALS: ClassVar[list[str]] = [
+        "swap",
+        "switch",
+        "replace",
+        "change",
+        "update the meal plan",
+        "update the plan",
+        "update my meal plan",
+        "update my plan",
+    ]
+
+    def _plan_keyword(
+        self,
+        message: str,
+        available_agents: set[str],
+        *,
+        state: WorkflowState | None = None,
+    ) -> dict[str, Any]:
         """Deterministic planning using keyword matching.
 
         Detects compound intents: if the message contains a preference signal
@@ -238,6 +307,15 @@ class PlannerAgent:
         agent = IntentAgent(mode="keyword")
         intent = agent._classify_keyword(message)
         constraints = agent._extract_constraints(message)
+
+        # Override: if there's an active meal plan, detect swap or submit intents
+        has_active_plan = bool(state and state.meal_plan)
+        msg_lower = message.lower()
+        if has_active_plan:
+            if any(s in msg_lower for s in self._MEALPLAN_SWAP_SIGNALS):
+                intent = "create_mealplan"
+            elif any(s in msg_lower for s in self._MEALPLAN_SUBMIT_SIGNALS):
+                intent = "submit_mealplan"
 
         # Detect embedded preference
         has_preference = has_preference_signal(message)

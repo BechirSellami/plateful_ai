@@ -113,6 +113,7 @@ def format_recommendations_prompt(
     constraints: dict[str, Any],
     *,
     user_message: str = "",
+    allergen_warning: str = "",
 ) -> str:
     """Format menu items and profile into a prompt for the LLM to generate recommendations."""
     items_text = "\n".join(
@@ -141,11 +142,19 @@ def format_recommendations_prompt(
         parts = [f"{k}: {v}" for k, v in constraints.items()]
         constraints_text = f"\nConstraints: {', '.join(parts)}"
 
+    allergen_text = ""
+    if allergen_warning:
+        allergen_text = (
+            f"\n\nIMPORTANT ALLERGEN CONFLICT:\n{allergen_warning}\n"
+            "You MUST start your response by clearly warning the user about this "
+            "allergen conflict before making alternative suggestions."
+        )
+
     return f"""Available items (pre-filtered and scored):
 {items_text}
 {request_text}
 User profile (stored preferences — secondary to current request):{profile_text or " No profile data yet"}
-{constraints_text}
+{constraints_text}{allergen_text}
 
 Prioritise items that match the user's current request. Use stored preferences \
 only as tie-breakers or extra context. Pick the top 3 items and explain briefly \

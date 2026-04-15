@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 
+from plateful.core.agent_contracts import state_to_initial_outputs, validate_plan
 from plateful.core.flow_router import get_flow_for_intent
 from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.workflow import BaseAgent, WorkflowState
@@ -144,6 +145,23 @@ async def run_workflow(
     audit_fn: Any | None = None,
 ) -> WorkflowState:
     """Execute the workflow by iterating through steps and dispatching to agents."""
+    # Validate the plan against declarative agent contracts (warn mode).
+    # Contract violations never block execution — they surface as log
+    # warnings and are attached to the Langfuse trace if one is active so
+    # operators can spot planner bugs without breaking live requests.
+    validation = validate_plan(flow_def["steps"], initial_outputs=state_to_initial_outputs(state))
+    if validation.issues:
+        validation.log(trace_id=state.trace_id)
+        tracing_init: TracingContext | None = getattr(state, "_tracing", None)
+        if tracing_init is not None and tracing_init.is_active:
+            with trace_agent_step(
+                tracing_init, agent_name="planner", step_name="validate_plan"
+            ) as val_span:
+                val_span.update(
+                    input={"steps": [s.get("agent") for s in flow_def["steps"]]},
+                    output=validation.summary(),
+                )
+
     for step in flow_def["steps"]:
         step_name = step["name"]
         agent_name = step["agent"]
@@ -261,6 +279,19 @@ async def run_planned_workflow(
                     "plan": [s.get("agent") for s in plan_result.get("plan", [])],
                 },
             )
+
+        # Short-circuit for out-of-scope requests — skip execution entirely
+        if plan_result.get("intent") == "out_of_scope":
+            state.recommendation_text = (
+                "I'm sorry, that's outside what I can help with. "
+                "I'm your catering assistant \u2014 I can help you with:\n"
+                "\u2022 Browsing today's menu and getting meal recommendations\n"
+                "\u2022 Placing and tracking lunch orders\n"
+                "\u2022 Saving your dietary preferences and allergies\n"
+                "\u2022 Planning meals for the week\n\n"
+                "What would you like to eat today?"
+            )
+            return state
 
         # Phase 2: execute the plan
         plan_steps = plan_result.get("plan", [])

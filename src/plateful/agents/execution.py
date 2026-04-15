@@ -19,6 +19,10 @@ class ExecutionAgent:
     """Submit order, schedule delivery, send confirmation."""
 
     async def run(self, state: WorkflowState) -> WorkflowState:
+        # Meal plan submission — convert plan into a multi-item order
+        if state.intent == "submit_mealplan" and state.meal_plan:
+            return await self._submit_meal_plan(state)
+
         # Check if policy blocked the order
         if state.policy_result and not state.policy_result.get("passed", True):
             violations = state.policy_result.get("violations", [])
@@ -81,6 +85,51 @@ class ExecutionAgent:
             trace_id=state.trace_id,
             order_id=order["order_id"],
             status=order["status"],
+            total=total,
+        )
+
+        return state
+
+    async def _submit_meal_plan(self, state: WorkflowState) -> WorkflowState:
+        """Submit the active meal plan as a multi-item weekly order."""
+        from plateful.tools.mealplan_tools import WEEKDAYS
+
+        items = [
+            {
+                "name": entry.get("name", ""),
+                "price_usd": entry.get("price_usd", 0),
+                "day": day,
+            }
+            for day in WEEKDAYS
+            if (entry := state.meal_plan.get(day, {})) and entry.get("name")
+        ]
+
+        if not items:
+            state.last_result = {"status": "error", "reason": "Meal plan is empty"}
+            return state
+
+        total = sum(float(i.get("price_usd", 0)) for i in items)
+
+        order = await submit_order(
+            user_id=state.user_id,
+            items=items,
+            total_usd=total,
+            requires_approval=False,
+        )
+
+        state.order = order
+        state.recommendation_text = (
+            f"Your weekly meal plan has been submitted! "
+            f"Order **#{order['order_id']}** — {len(items)} meals, "
+            f"**${total:.2f}** for the week."
+        )
+        state.last_result = {"order": order}
+
+        logger.info(
+            "mealplan_submitted",
+            trace_id=state.trace_id,
+            order_id=order["order_id"],
+            item_count=len(items),
             total=total,
         )
 

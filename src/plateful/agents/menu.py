@@ -1,4 +1,5 @@
-from typing import Any
+import re
+from typing import Any, ClassVar
 
 import structlog
 
@@ -21,14 +22,39 @@ class MenuAgent:
 
     async def run(self, state: WorkflowState) -> WorkflowState:
         # Step 1: Get menu items matching constraints
-        filters = self._build_filters(state)
+        filters = self._build_filters(state)  # Budget, calories, category, cuisine
+
         items = await get_menu(filters=filters, menu_data=self._menu_data)
 
         # Step 2: Deterministic allergen filter (safety-critical, never LLM)
         user_allergens = state.user_profile.get("allergies", [])
         # Extract allergen names from memory strings like "Allergic to peanuts"
         allergen_names = self._extract_allergen_names(user_allergens)
-        items = check_allergens(items, allergen_names)
+
+        logger.info(
+            "menu_agent_start",
+            trace_id=state.trace_id,
+            filters=filters,
+            user_allergens=user_allergens,
+            extracted_allergens=allergen_names,
+        )
+
+        items, removed = check_allergens(items, allergen_names)
+        logger.info(
+            "menu_agent_start",
+            trace_id=state.trace_id,
+            items_after_allergen_filter=len(items),
+            items_removed=len(removed),
+        )
+
+        # Step 2b: Detect allergen conflicts with what the user asked for
+        if removed:
+            user_msg = ""
+            if state.messages:
+                user_msg = state.messages[-1].get("content", "").lower()
+            conflicts = self._find_request_conflicts(user_msg, removed)
+            if conflicts:
+                state.allergen_conflicts = conflicts
 
         # Step 3: Filter by availability
         items = filter_by_availability(items)
@@ -40,6 +66,8 @@ class MenuAgent:
             "menu_agent_complete",
             trace_id=state.trace_id,
             items_found=len(items),
+            items_removed_allergens=len(removed),
+            allergen_conflicts=len(state.allergen_conflicts),
             filters=filters,
             allergens_applied=len(allergen_names),
         )
@@ -61,33 +89,116 @@ class MenuAgent:
 
         return filters
 
+    def _find_request_conflicts(
+        self,
+        user_msg: str,
+        removed_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Check if any allergen-removed items match what the user asked for.
+
+        Uses two strategies:
+        1. **Allergen word match** — the user mentions an allergen ingredient
+           directly (e.g. "shrimps" matches the "shellfish" allergen group).
+        2. **Item name match** — a word from a removed item's name appears
+           in the request (e.g. user says "pad thai", item is "Pad Thai").
+
+        Returns a list of conflict dicts. When the match is ingredient-level,
+        ``items_removed`` lists all items filtered for that allergen.
+        """
+        if not user_msg:
+            return []
+
+        # Allergen ingredient words that map to allergen group names.
+        # Lets us detect "shrimps" -> shellfish, "peanut" -> peanuts, etc.
+        ingredient_to_allergen: dict[str, str] = {
+            "shrimp": "shellfish",
+            "shrimps": "shellfish",
+            "prawn": "shellfish",
+            "prawns": "shellfish",
+            "lobster": "shellfish",
+            "crab": "shellfish",
+            "clam": "shellfish",
+            "clams": "shellfish",
+            "oyster": "shellfish",
+            "peanut": "peanuts",
+            "peanuts": "peanuts",
+            "walnut": "tree nuts",
+            "almond": "tree nuts",
+            "cashew": "tree nuts",
+        }
+
+        conflicts: list[dict[str, Any]] = []
+        seen_allergens: set[str] = set()
+
+        # Strategy 1: user mentions an allergen ingredient directly
+        msg_words = set(user_msg.split())
+        for word in msg_words:
+            allergen_group = ingredient_to_allergen.get(word)
+            if allergen_group and allergen_group not in seen_allergens:
+                # Find all removed items that matched this allergen group
+                matching_items = [
+                    item.get("name", "")
+                    for item in removed_items
+                    if allergen_group in item.get("matched_allergens", [])
+                ]
+                if matching_items:
+                    seen_allergens.add(allergen_group)
+                    conflicts.append(
+                        {
+                            "ingredient": word,
+                            "allergen_group": allergen_group,
+                            "items_removed": matching_items,
+                            "matched_allergens": [allergen_group],
+                        }
+                    )
+
+        # Strategy 2: user mentions a specific item name
+        for item in removed_items:
+            item_name = item.get("name", "").lower()
+            item_words = {w for w in item_name.split() if len(w) > 2}
+            if any(w in user_msg for w in item_words):
+                # Skip if already covered by strategy 1
+                item_allergens = set(item.get("matched_allergens", []))
+                if not item_allergens & seen_allergens:
+                    conflicts.append(
+                        {
+                            "name": item.get("name", ""),
+                            "matched_allergens": item.get("matched_allergens", []),
+                        }
+                    )
+
+        return conflicts
+
+    # Ordered longest-first so "shellfish" matches before "fish",
+    # "peanuts" before "peanut", etc.
+    _COMMON_ALLERGENS: ClassVar[list[str]] = [
+        "tree nuts",
+        "shellfish",
+        "peanuts",
+        "peanut",
+        "gluten",
+        "sesame",
+        "shrimp",
+        "dairy",
+        "wheat",
+        "milk",
+        "eggs",
+        "fish",
+        "egg",
+        "soy",
+    ]
+
     def _extract_allergen_names(self, allergen_memories: list[Any]) -> list[str]:
         """Extract allergen ingredient names from memory strings.
 
         Handles both raw strings ("peanuts") and memory objects
-        ("Allergic to peanuts").
+        ("Allergic to peanuts"). Uses word-boundary matching so that
+        "shellfish" does not also match "fish".
         """
-        names = []
+        names: list[str] = []
         for mem in allergen_memories:
             text = str(mem).lower()
-            # Extract common allergens from memory text
-            common_allergens = [
-                "peanuts",
-                "peanut",
-                "tree nuts",
-                "milk",
-                "dairy",
-                "eggs",
-                "egg",
-                "wheat",
-                "gluten",
-                "soy",
-                "fish",
-                "shellfish",
-                "shrimp",
-                "sesame",
-            ]
-            for allergen in common_allergens:
-                if allergen in text:
+            for allergen in self._COMMON_ALLERGENS:
+                if re.search(rf"\b{re.escape(allergen)}\b", text) and allergen not in names:
                     names.append(allergen)
         return names

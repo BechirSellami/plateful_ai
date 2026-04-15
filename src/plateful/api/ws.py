@@ -31,6 +31,11 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
     """Handle a single WebSocket chat session."""
     await ws.accept()
 
+    # Session-level state that persists across turns
+    session_meal_plan: dict[str, dict[str, Any]] = {}
+    session_menu_items: list[dict[str, Any]] = []
+    session_recommendations: list[dict[str, Any]] = []
+
     try:
         while True:
             data: dict[str, Any] = await ws.receive_json()
@@ -43,11 +48,15 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 await ws.send_json({"type": "error", "detail": "Empty message"})
                 continue
 
-            # Build state
+            # Build state, carrying forward context from prior turns so
+            # order_meal flows can resolve items seen during recommendation.
             state = WorkflowState(
                 user_id=user_id,
                 session_id=session_id,
                 messages=[{"role": "user", "content": message}],
+                meal_plan=dict(session_meal_plan),
+                menu_items=list(session_menu_items),
+                recommendations=list(session_recommendations),
             )
 
             try:
@@ -65,37 +74,50 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     available = {k for k in registry}
                     plan_result = await planner.plan(state, available)
 
-                # Phase 2: execute plan
-                plan_steps = plan_result.get("plan", [])
-                flow_steps = [
-                    {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
-                    for step in plan_steps
-                ]
-                flow_def: dict[str, Any] = {"steps": flow_steps}
-
-                # Compose two audit callbacks: stream progress + persist to DB
-                async with async_session_factory() as db_session:
-                    _db_audit = make_audit_fn(db_session)
-
-                    def _make_combined(websocket: WebSocket, db_fn: Any) -> Any:
-                        async def _combined(**kwargs: Any) -> None:
-                            step = kwargs.get("step", "")
-                            agent = kwargs.get("agent", "")
-                            await websocket.send_json(
-                                {"type": "step", "step": step, "agent": agent}
-                            )
-                            await db_fn(**kwargs)
-
-                        return _combined
-
-                    state = await run_workflow(
-                        flow_def,
-                        state,
-                        registry,
-                        audit_fn=_make_combined(ws, _db_audit),
+                # Short-circuit for out-of-scope requests
+                if plan_result.get("intent") == "out_of_scope":
+                    state.recommendation_text = (
+                        "I'm sorry, that's outside what I can help with. "
+                        "I'm your catering assistant \u2014 I can help you with:\n"
+                        "\u2022 Browsing today's menu and getting meal recommendations\n"
+                        "\u2022 Placing and tracking lunch orders\n"
+                        "\u2022 Saving your dietary preferences and allergies\n"
+                        "\u2022 Planning meals for the week\n\n"
+                        "What would you like to eat today?"
                     )
-                    await db_session.commit()
-                tracing.flush()
+                    tracing.flush()
+                else:
+                    # Phase 2: execute plan
+                    plan_steps = plan_result.get("plan", [])
+                    flow_steps = [
+                        {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
+                        for step in plan_steps
+                    ]
+                    flow_def: dict[str, Any] = {"steps": flow_steps}
+
+                    # Compose two audit callbacks: stream progress + persist to DB
+                    async with async_session_factory() as db_session:
+                        _db_audit = make_audit_fn(db_session)
+
+                        def _make_combined(websocket: WebSocket, db_fn: Any) -> Any:
+                            async def _combined(**kwargs: Any) -> None:
+                                step = kwargs.get("step", "")
+                                agent = kwargs.get("agent", "")
+                                await websocket.send_json(
+                                    {"type": "step", "step": step, "agent": agent}
+                                )
+                                await db_fn(**kwargs)
+
+                            return _combined
+
+                        state = await run_workflow(
+                            flow_def,
+                            state,
+                            registry,
+                            audit_fn=_make_combined(ws, _db_audit),
+                        )
+                        await db_session.commit()
+                    tracing.flush()
 
                 # Build result payload
                 result: dict[str, Any] = {
@@ -117,7 +139,17 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     "recommendation_text": state.recommendation_text,
                     "order": state.order,
                     "user_profile": state.user_profile,
+                    "allergen_conflicts": state.allergen_conflicts or [],
+                    "meal_plan": state.meal_plan or None,
                 }
+
+                # Persist context across turns
+                if state.meal_plan:
+                    session_meal_plan = dict(state.meal_plan)
+                if state.menu_items:
+                    session_menu_items = list(state.menu_items)
+                if state.recommendations:
+                    session_recommendations = list(state.recommendations)
 
                 await ws.send_json(result)
 

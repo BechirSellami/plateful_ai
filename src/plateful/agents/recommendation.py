@@ -66,16 +66,26 @@ class RecommendationAgent:
         ranked = rank_items(items, profile, user_message=user_message)
         top_items = ranked[:5]  # send top 5 to LLM for final selection
 
+        # Build allergen warning if the user asked for something unsafe
+        allergen_warning = self._build_allergen_warning(state)
+
         # Stage 2: LLM recommendation (if client available)
         recommendation_text = None
         if self._client and settings.anthropic_api_key:
             recommendation_text = await self._generate_llm_recommendation(
-                top_items, profile, constraints, user_message=user_message, state=state
+                top_items,
+                profile,
+                constraints,
+                user_message=user_message,
+                state=state,
+                allergen_warning=allergen_warning,
             )
 
         # If no LLM, use deterministic fallback
         if not recommendation_text:
             recommendation_text = self._format_deterministic_recommendation(top_items)
+            if allergen_warning:
+                recommendation_text = allergen_warning + "\n\n" + recommendation_text
 
         state.recommendations = top_items[:3]
         state.recommendation_text = recommendation_text
@@ -91,6 +101,34 @@ class RecommendationAgent:
 
         return state
 
+    def _build_allergen_warning(self, state: WorkflowState) -> str:
+        """Build a user-facing allergen warning if any requested items conflict."""
+        if not state.allergen_conflicts:
+            return ""
+
+        parts: list[str] = []
+        for conflict in state.allergen_conflicts:
+            if "ingredient" in conflict:
+                # Ingredient-level match: "shrimps" -> shellfish allergy
+                ingredient = conflict["ingredient"]
+                allergen = conflict["allergen_group"]
+                count = len(conflict.get("items_removed", []))
+                parts.append(
+                    f"**{ingredient}** is a {allergen} allergen "
+                    f"({count} item{'s' if count != 1 else ''} removed)"
+                )
+            else:
+                # Item-level match: user asked for a specific dish
+                name = conflict["name"]
+                allergens = ", ".join(conflict["matched_allergens"])
+                parts.append(f"**{name}** (contains {allergens})")
+
+        warning_text = "; ".join(parts)
+        return (
+            f"**Heads up!** {warning_text} — removed from your options because of "
+            f"your allergy on file. Here are some safe alternatives instead:"
+        )
+
     async def _generate_llm_recommendation(
         self,
         items: list[dict[str, Any]],
@@ -99,13 +137,18 @@ class RecommendationAgent:
         *,
         user_message: str = "",
         state: WorkflowState | None = None,
+        allergen_warning: str = "",
     ) -> str | None:
         """Use Claude to generate a natural-language recommendation."""
         try:
             from plateful.core.observability import null_llm_trace, trace_llm_call
 
             prompt = format_recommendations_prompt(
-                items, profile, constraints, user_message=user_message
+                items,
+                profile,
+                constraints,
+                user_message=user_message,
+                allergen_warning=allergen_warning,
             )
 
             # Get tracing context for LLM generation recording

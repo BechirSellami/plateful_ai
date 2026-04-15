@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from plateful.agents.execution import ExecutionAgent
 from plateful.agents.learning import LearningAgent
+from plateful.agents.mealplan import MealPlanAgent
 from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
 from plateful.agents.planner import PlannerAgent
@@ -47,6 +48,7 @@ class ChatResponse(BaseModel):
     recommendations: list[dict[str, Any]]
     recommendation_text: str | None
     user_profile: dict[str, Any]
+    meal_plan: dict[str, Any] | None = None
 
 
 def _get_claude_client() -> anthropic.AsyncAnthropic | None:
@@ -69,6 +71,7 @@ def _build_agent_registry() -> dict[str, Any]:
     registry: dict[str, Any] = {
         "menu": MenuAgent(menu_data=SAMPLE_MENU),
         "recommendation": RecommendationAgent(anthropic_client=claude_client),
+        "mealplan": MealPlanAgent(anthropic_client=claude_client),
         "execution": ExecutionAgent(),
     }
     if settings.mem0_api_key:
@@ -114,6 +117,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         recommendations=state.recommendations,
         recommendation_text=state.recommendation_text,
         user_profile=state.user_profile,
+        meal_plan=state.meal_plan or None,
     )
 
 

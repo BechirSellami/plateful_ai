@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useChat } from "../../context/ChatContext";
 import { useWs } from "../../context/WsContext";
+import MealPlanCard from "./MealPlanCard";
+import RecommendationCards from "./RecommendationCards";
+import ThinkingBubble from "./ThinkingBubble";
 import styles from "./ChatPanel.module.css";
 
 const EXAMPLES = [
@@ -30,6 +33,40 @@ export default function ChatPanel() {
 
   const showWelcome = messages.length === 0;
 
+  // Find the last message with recommendations (for "Order this" buttons)
+  const lastRecMsgId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].recommendations && messages[i].recommendations!.length > 0)
+        return messages[i].id;
+    }
+    return null;
+  })();
+
+  // Check if an order was already placed after the last recommendations
+  const recOrdered = (() => {
+    if (lastRecMsgId === null) return false;
+    const idx = messages.findIndex((m) => m.id === lastRecMsgId);
+    return messages.slice(idx + 1).some((m) => m.order);
+  })();
+
+  // Find the last message that has a meal plan (for the submit button)
+  const lastMealPlanMsgId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.meal_plan && Object.keys(m.meal_plan).length > 0) return m.id;
+    }
+    return null;
+  })();
+
+  // Check if the plan has already been submitted (any later message has intent submit_mealplan)
+  const planSubmitted = (() => {
+    if (lastMealPlanMsgId === null) return false;
+    const idx = messages.findIndex((m) => m.id === lastMealPlanMsgId);
+    return messages
+      .slice(idx + 1)
+      .some((m) => m.intent === "submit_mealplan");
+  })();
+
   return (
     <div className={styles.panel}>
       <div className={styles.chatArea}>
@@ -55,61 +92,70 @@ export default function ChatPanel() {
         )}
 
         {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`${styles.message} ${
-              m.role === "user" ? styles.user : styles.agent
-            }`}
-          >
-            {m.steps && m.steps.length > 0 && (
-              <div className={styles.stepsBar}>
-                {m.steps
-                  .filter((s) => s !== "done")
-                  .map((s, i) => (
-                    <span
-                      key={i}
-                      className={`${styles.stepChip} ${styles.done}`}
-                    >
-                      {s} &#10003;
-                    </span>
-                  ))}
-              </div>
+          <div key={m.id}>
+            {/* Collapsed thinking toggle for completed agent messages */}
+            {m.role === "agent" && m.steps && m.steps.length > 0 && (
+              <ThinkingBubble
+                steps={m.steps.filter((s) => s !== "done")}
+                active={false}
+              />
             )}
-            <div className={styles.bubble}>
-              {m.intent && m.role === "agent" && (
-                <span className={styles.intentBadge}>{m.intent}</span>
-              )}
-              {m.role === "agent" ? (
-                <span
-                  dangerouslySetInnerHTML={{
-                    __html: formatMarkdown(m.content),
-                  }}
+
+            <div
+              className={`${styles.message} ${
+                m.role === "user" ? styles.user : styles.agent
+              }`}
+            >
+              {/* Meal plan card */}
+              {m.meal_plan && Object.keys(m.meal_plan).length > 0 && (
+                <MealPlanCard
+                  plan={m.meal_plan}
+                  onSubmit={
+                    m.id === lastMealPlanMsgId && !planSubmitted && !processing
+                      ? () => handleSend("Submit my meal plan")
+                      : undefined
+                  }
+                  submitted={m.id === lastMealPlanMsgId && planSubmitted}
                 />
-              ) : (
-                m.content
+              )}
+
+              {/* Recommendation cards */}
+              {m.recommendations && m.recommendations.length > 0 && (
+                <RecommendationCards
+                  items={m.recommendations}
+                  onOrder={
+                    m.id === lastRecMsgId && !recOrdered && !processing
+                      ? (name) => handleSend(`I'll take the ${name}`)
+                      : undefined
+                  }
+                  disabled={processing}
+                />
+              )}
+
+              {/* Text bubble — skip if cards cover everything */}
+              {m.content && (
+                <div className={styles.bubble}>
+                  {m.intent && m.role === "agent" && (
+                    <span className={styles.intentBadge}>{m.intent}</span>
+                  )}
+                  {m.role === "agent" ? (
+                    <span
+                      dangerouslySetInnerHTML={{
+                        __html: formatMarkdown(m.content),
+                      }}
+                    />
+                  ) : (
+                    m.content
+                  )}
+                </div>
               )}
             </div>
           </div>
         ))}
 
-        {/* Active steps indicator */}
-        {pendingSteps.length > 0 && (
-          <div className={styles.stepsBar}>
-            {pendingSteps.map((s, i) => (
-              <span
-                key={i}
-                className={`${styles.stepChip} ${
-                  i < pendingSteps.length - 1 ? styles.done : ""
-                }`}
-              >
-                {i === pendingSteps.length - 1 && (
-                  <span className={styles.spinner} />
-                )}
-                {s}
-                {i < pendingSteps.length - 1 && " \u2713"}
-              </span>
-            ))}
-          </div>
+        {/* Active thinking indicator while processing */}
+        {processing && (
+          <ThinkingBubble steps={pendingSteps} active={true} />
         )}
 
         <div ref={chatEndRef} />
