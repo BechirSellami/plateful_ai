@@ -73,8 +73,11 @@ class RecommendationAgent:
         recommendation_text = None
         if self._client and settings.anthropic_api_key:
             recommendation_text = await self._generate_llm_recommendation(
-                top_items, profile, constraints,
-                user_message=user_message, state=state,
+                top_items,
+                profile,
+                constraints,
+                user_message=user_message,
+                state=state,
                 allergen_warning=allergen_warning,
             )
 
@@ -141,7 +144,9 @@ class RecommendationAgent:
             from plateful.core.observability import null_llm_trace, trace_llm_call
 
             prompt = format_recommendations_prompt(
-                items, profile, constraints,
+                items,
+                profile,
+                constraints,
                 user_message=user_message,
                 allergen_warning=allergen_warning,
             )

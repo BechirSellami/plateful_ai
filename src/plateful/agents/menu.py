@@ -22,7 +22,7 @@ class MenuAgent:
 
     async def run(self, state: WorkflowState) -> WorkflowState:
         # Step 1: Get menu items matching constraints
-        filters = self._build_filters(state) # Budget, calories, category, cuisine
+        filters = self._build_filters(state)  # Budget, calories, category, cuisine
 
         items = await get_menu(filters=filters, menu_data=self._menu_data)
 
@@ -31,10 +31,21 @@ class MenuAgent:
         # Extract allergen names from memory strings like "Allergic to peanuts"
         allergen_names = self._extract_allergen_names(user_allergens)
 
-        logger.info("menu_agent_start", trace_id=state.trace_id, filters=filters, user_allergens=user_allergens, extracted_allergens=allergen_names)
+        logger.info(
+            "menu_agent_start",
+            trace_id=state.trace_id,
+            filters=filters,
+            user_allergens=user_allergens,
+            extracted_allergens=allergen_names,
+        )
 
         items, removed = check_allergens(items, allergen_names)
-        logger.info("menu_agent_start", trace_id=state.trace_id, items_after_allergen_filter=len(items), items_removed=len(removed))
+        logger.info(
+            "menu_agent_start",
+            trace_id=state.trace_id,
+            items_after_allergen_filter=len(items),
+            items_removed=len(removed),
+        )
 
         # Step 2b: Detect allergen conflicts with what the user asked for
         if removed:
@@ -132,12 +143,14 @@ class MenuAgent:
                 ]
                 if matching_items:
                     seen_allergens.add(allergen_group)
-                    conflicts.append({
-                        "ingredient": word,
-                        "allergen_group": allergen_group,
-                        "items_removed": matching_items,
-                        "matched_allergens": [allergen_group],
-                    })
+                    conflicts.append(
+                        {
+                            "ingredient": word,
+                            "allergen_group": allergen_group,
+                            "items_removed": matching_items,
+                            "matched_allergens": [allergen_group],
+                        }
+                    )
 
         # Strategy 2: user mentions a specific item name
         for item in removed_items:
@@ -147,10 +160,12 @@ class MenuAgent:
                 # Skip if already covered by strategy 1
                 item_allergens = set(item.get("matched_allergens", []))
                 if not item_allergens & seen_allergens:
-                    conflicts.append({
-                        "name": item.get("name", ""),
-                        "matched_allergens": item.get("matched_allergens", []),
-                    })
+                    conflicts.append(
+                        {
+                            "name": item.get("name", ""),
+                            "matched_allergens": item.get("matched_allergens", []),
+                        }
+                    )
 
         return conflicts
 

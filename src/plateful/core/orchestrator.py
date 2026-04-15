@@ -149,9 +149,7 @@ async def run_workflow(
     # Contract violations never block execution — they surface as log
     # warnings and are attached to the Langfuse trace if one is active so
     # operators can spot planner bugs without breaking live requests.
-    validation = validate_plan(
-        flow_def["steps"], initial_outputs=state_to_initial_outputs(state)
-    )
+    validation = validate_plan(flow_def["steps"], initial_outputs=state_to_initial_outputs(state))
     if validation.issues:
         validation.log(trace_id=state.trace_id)
         tracing_init: TracingContext | None = getattr(state, "_tracing", None)
