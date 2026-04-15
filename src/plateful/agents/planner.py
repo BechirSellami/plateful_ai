@@ -124,9 +124,7 @@ def _build_system_prompt(
         context = "The user has an ACTIVE meal plan:\n" + "\n".join(plan_lines)
     else:
         context = "No active meal plan in this session."
-    return PLANNER_SYSTEM_PROMPT.format(
-        agent_descriptions=descriptions, meal_plan_context=context
-    )
+    return PLANNER_SYSTEM_PROMPT.format(agent_descriptions=descriptions, meal_plan_context=context)
 
 
 class PlannerAgent:
@@ -202,9 +200,7 @@ class PlannerAgent:
             from plateful.core.observability import null_llm_trace, trace_llm_call
 
             meal_plan = state.meal_plan if state else None
-            system_prompt = _build_system_prompt(
-                available_agents, meal_plan=meal_plan or None
-            )
+            system_prompt = _build_system_prompt(available_agents, meal_plan=meal_plan or None)
 
             # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None

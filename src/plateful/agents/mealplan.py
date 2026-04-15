@@ -92,13 +92,9 @@ class MealPlanAgent:
         new_item_name = swap_info.get("item", "")
 
         # Resolve the new item from the menu, excluding items already in the plan
-        plan_item_names = {
-            entry.get("name", "").lower() for entry in state.meal_plan.values()
-        }
+        plan_item_names = {entry.get("name", "").lower() for entry in state.meal_plan.values()}
         available = [
-            item
-            for item in state.menu_items
-            if item.get("name", "").lower() not in plan_item_names
+            item for item in state.menu_items if item.get("name", "").lower() not in plan_item_names
         ]
 
         new_item = self._resolve_item(new_item_name, available)
@@ -108,7 +104,7 @@ class MealPlanAgent:
 
         if not new_item:
             state.recommendation_text = (
-                f'I couldn\'t find "{new_item_name}" on today\'s menu. '
+                f"I couldn't find \"{new_item_name}\" on today's menu. "
                 "Could you try a different item?"
             )
             state.last_result = state.recommendation_text
@@ -129,10 +125,7 @@ class MealPlanAgent:
 
         # Present updated plan
         plan_text = format_meal_plan_text(state.meal_plan)
-        swap_msg = (
-            f"Done! I've swapped **{day}** from {old_name} "
-            f"to **{new_item['name']}**.\n\n"
-        )
+        swap_msg = f"Done! I've swapped **{day}** from {old_name} to **{new_item['name']}**.\n\n"
         state.recommendation_text = swap_msg + plan_text
 
         logger.info(
