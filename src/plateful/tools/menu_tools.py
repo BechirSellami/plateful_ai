@@ -15,9 +15,9 @@ async def get_menu(
     for item in items:
         if not item.get("active", True):
             continue
-        if "category" in filters and item.get("category") != filters["category"]:
+        if "category" in filters and item.get("category", "").lower() != str(filters["category"]).lower():
             continue
-        if "cuisine" in filters and item.get("cuisine") != filters["cuisine"]:
+        if "cuisine" in filters and item.get("cuisine", "").lower() != str(filters["cuisine"]).lower():
             continue
         if "max_price" in filters and Decimal(str(item.get("price_usd", 0))) > Decimal(
             str(filters["max_price"])
