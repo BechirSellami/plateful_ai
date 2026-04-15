@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +17,13 @@ from plateful.agents.memory import MemoryAgent
 from plateful.agents.menu import MenuAgent
 from plateful.agents.planner import PlannerAgent
 from plateful.agents.recommendation import RecommendationAgent
+from plateful.core.audit import make_audit_fn
 from plateful.core.config import settings
 from plateful.core.mem0_client import get_all_memories, get_mem0_client, search_memories
 from plateful.core.orchestrator import run_planned_workflow
 from plateful.core.seed_data import SAMPLE_MENU
 from plateful.core.workflow import WorkflowState
+from plateful.db.session import async_session_factory
 
 app = FastAPI(title="Plateful AI", description="Catering Agent API", version="0.1.0")
 
@@ -87,6 +90,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     Phase 1: Planner builds an execution plan (handles compound intents).
     Phase 2: Execute the plan sequentially.
+
+    Audit: Each agent step is persisted to the audit_trail table.
     """
     state = WorkflowState(
         user_id=request.user_id,
@@ -97,7 +102,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
     registry = _build_agent_registry()
     planner = _build_planner(_get_claude_client())
 
-    state = await run_planned_workflow(state, registry, planner)
+    async with async_session_factory() as session:
+        audit_fn = make_audit_fn(session)
+        state = await run_planned_workflow(state, registry, planner, audit_fn=audit_fn)
+        await session.commit()
 
     return ChatResponse(
         intent=state.intent,
@@ -153,6 +161,88 @@ async def delete_memory(user_id: str, memory_id: str) -> dict[str, str]:
     client = _require_mem0_client()
     client.delete(memory_id=memory_id)
     return {"status": "deleted", "memory_id": memory_id}
+
+
+# --- Feedback / Scoring -------------------------------------------------------
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    score: float
+    comment: str = ""
+
+
+@app.post("/api/feedback")
+async def submit_feedback(request: FeedbackRequest) -> dict[str, str]:
+    """Submit user feedback for a trace (sent to Langfuse if configured)."""
+    from plateful.core.observability import get_langfuse
+
+    client = get_langfuse()
+    if client is None:
+        raise HTTPException(status_code=503, detail="Langfuse is not configured")
+
+    client.create_score(
+        trace_id=request.trace_id,
+        name="user_feedback",
+        value=request.score,
+        comment=request.comment,
+    )
+    return {"status": "ok", "trace_id": request.trace_id}
+
+
+# --- Audit viewer endpoints ---------------------------------------------------
+
+
+@app.get("/api/audit/trace/{trace_id}")
+async def get_trace_audit_log(trace_id: str) -> list[dict[str, Any]]:
+    """Return all audit records for a specific trace (one user message)."""
+    from plateful.db.audit_store import get_trace_audit
+
+    async with async_session_factory() as session:
+        rows = await get_trace_audit(session, trace_id=trace_id)
+        return [
+            {
+                "id": str(row.id),
+                "trace_id": str(row.trace_id),
+                "timestamp": row.timestamp.isoformat(),
+                "user_id": row.user_id,
+                "agent": row.agent,
+                "decision_type": row.decision_type.value,
+                "input_snapshot": row.input_snapshot,
+                "output_snapshot": row.output_snapshot,
+                "reasoning": row.reasoning,
+                "outcome": row.outcome.value,
+            }
+            for row in rows
+        ]
+
+
+@app.get("/api/audit/user/{user_id}")
+async def get_user_audit_log(
+    user_id: str,
+    since: datetime | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return audit records for a user, most recent first."""
+    from plateful.db.audit_store import get_user_audit
+
+    async with async_session_factory() as session:
+        rows = await get_user_audit(session, user_id=user_id, since=since, limit=limit)
+        return [
+            {
+                "id": str(row.id),
+                "trace_id": str(row.trace_id),
+                "timestamp": row.timestamp.isoformat(),
+                "user_id": row.user_id,
+                "agent": row.agent,
+                "decision_type": row.decision_type.value,
+                "input_snapshot": row.input_snapshot,
+                "output_snapshot": row.output_snapshot,
+                "reasoning": row.reasoning,
+                "outcome": row.outcome.value,
+            }
+            for row in rows
+        ]
 
 
 # --- WebSocket + UI ----------------------------------------------------------

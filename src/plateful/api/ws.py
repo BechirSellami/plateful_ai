@@ -18,8 +18,11 @@ import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 
 from plateful.agents.planner import PlannerAgent
+from plateful.core.audit import make_audit_fn
+from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.orchestrator import run_workflow
 from plateful.core.workflow import WorkflowState
+from plateful.db.session import async_session_factory
 
 logger = structlog.get_logger()
 
@@ -48,10 +51,19 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
             )
 
             try:
+                # Attach observability trace
+                tracing = TracingContext.create(
+                    trace_id=state.trace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                state._tracing = tracing  # type: ignore[attr-defined]
+
                 # Phase 1: plan
                 await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
-                available = {k for k in registry}
-                plan_result = await planner.plan(state, available)
+                with trace_agent_step(tracing, agent_name="planner", step_name="plan"):
+                    available = {k for k in registry}
+                    plan_result = await planner.plan(state, available)
 
                 # Phase 2: execute plan
                 plan_steps = plan_result.get("plan", [])
@@ -61,16 +73,29 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 ]
                 flow_def: dict[str, Any] = {"steps": flow_steps}
 
-                # Audit callback that streams step progress to the client
-                def make_audit_fn(websocket: WebSocket):  # type: ignore[no-untyped-def]
-                    async def _audit(**kwargs: Any) -> None:
-                        step = kwargs.get("step", "")
-                        agent = kwargs.get("agent", "")
-                        await websocket.send_json({"type": "step", "step": step, "agent": agent})
+                # Compose two audit callbacks: stream progress + persist to DB
+                async with async_session_factory() as db_session:
+                    _db_audit = make_audit_fn(db_session)
 
-                    return _audit
+                    def _make_combined(websocket: WebSocket, db_fn: Any) -> Any:
+                        async def _combined(**kwargs: Any) -> None:
+                            step = kwargs.get("step", "")
+                            agent = kwargs.get("agent", "")
+                            await websocket.send_json(
+                                {"type": "step", "step": step, "agent": agent}
+                            )
+                            await db_fn(**kwargs)
 
-                state = await run_workflow(flow_def, state, registry, audit_fn=make_audit_fn(ws))
+                        return _combined
+
+                    state = await run_workflow(
+                        flow_def,
+                        state,
+                        registry,
+                        audit_fn=_make_combined(ws, _db_audit),
+                    )
+                    await db_session.commit()
+                tracing.flush()
 
                 # Build result payload
                 result: dict[str, Any] = {

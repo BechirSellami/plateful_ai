@@ -12,6 +12,7 @@ import structlog
 from mem0 import MemoryClient
 
 from plateful.core.mem0_client import add_memories
+from plateful.core.preference_signals import has_preference_signal
 from plateful.core.workflow import WorkflowState
 from plateful.tools.learning_tools import build_mem0_messages, summarize_session_events
 
@@ -35,6 +36,8 @@ class LearningAgent:
             )
             state.last_result = {"status": "skipped", "reason": "no events to learn from"}
             return state
+        else:
+            logger.info("Learning_agent_events", trace_id=state.trace_id, events=events)
 
         summary = summarize_session_events(events)
 
@@ -74,18 +77,24 @@ class LearningAgent:
         """
         events: list[dict[str, Any]] = []
 
-        # Preference / constraint declarations from the conversation
-        if state.intent == "declare_preference":
-            user_message = ""
-            if state.messages:
-                user_message = state.messages[-1].get("content", "")
-            if user_message:
-                events.append(
-                    {
-                        "event_type": "preference_declared",
-                        "payload": {"message": user_message},
-                    }
-                )
+        user_message = ""
+        if state.messages:
+            user_message = state.messages[-1].get("content", "")
+
+        # Preference / constraint declarations from the conversation.
+        # Detect preference signals from the user message regardless of
+        # the classified intent — compound messages like "I love spicy
+        # food, what do you recommend?" have intent=get_recommendation
+        # but still contain a preference worth saving.
+        has_preference = state.intent == "declare_preference" or has_preference_signal(user_message)
+
+        if has_preference and user_message:
+            events.append(
+                {
+                    "event_type": "preference_declared",
+                    "payload": {"message": user_message},
+                }
+            )
 
             # Also capture any extracted constraints (dietary, cuisine, etc.)
             for key in ("dietary", "cuisine", "budget"):

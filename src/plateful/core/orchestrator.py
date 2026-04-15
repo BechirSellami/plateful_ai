@@ -5,12 +5,89 @@ from typing import Any
 import structlog
 
 from plateful.core.flow_router import get_flow_for_intent
+from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.workflow import BaseAgent, WorkflowState
 
 logger = structlog.get_logger()
 
 # Background tasks must be stored to prevent garbage collection
 _background_tasks: set[asyncio.Task[Any]] = set()
+
+
+# ---------------------------------------------------------------------------
+# Per-agent I/O snapshots for Langfuse span visibility
+# ---------------------------------------------------------------------------
+
+
+def _agent_input(agent_name: str, state: WorkflowState) -> dict[str, Any]:
+    """Capture the relevant state fields an agent reads as its input."""
+    base: dict[str, Any] = {
+        "user_id": state.user_id,
+        "intent": state.intent,
+    }
+    if state.messages:
+        base["user_message"] = state.messages[-1].get("content", "")
+
+    if agent_name == "memory":
+        base["constraints"] = state.constraints
+    elif agent_name == "menu":
+        base["constraints"] = state.constraints
+        base["allergies"] = state.user_profile.get("allergies", [])
+    elif agent_name in ("recommendation", "mealplan"):
+        base["menu_items_count"] = len(state.menu_items)
+        base["constraints"] = state.constraints
+        base["user_profile"] = state.user_profile
+    elif agent_name == "execution":
+        base["recommendations_count"] = len(state.recommendations)
+        base["requires_approval"] = state.requires_approval
+        meal_plan = getattr(state, "meal_plan", None)
+        if meal_plan:
+            base["meal_plan_days"] = list(meal_plan.keys())
+    elif agent_name == "learning":
+        base["last_result_type"] = type(state.last_result).__name__
+
+    return base
+
+
+def _agent_output(agent_name: str, state: WorkflowState) -> dict[str, Any]:
+    """Capture what the agent produced after running."""
+    if agent_name == "memory":
+        return {
+            "user_profile": state.user_profile,
+        }
+    elif agent_name == "menu":
+        return {
+            "menu_items_count": len(state.menu_items),
+            "menu_items": [
+                {"name": i.get("name"), "price_usd": i.get("price_usd")}
+                for i in state.menu_items[:10]  # cap for readability
+            ],
+        }
+    elif agent_name == "recommendation":
+        return {
+            "recommendations": [
+                {"name": r.get("name"), "score": r.get("score")} for r in state.recommendations
+            ],
+            "recommendation_text": (state.recommendation_text or "")[:500],
+        }
+    elif agent_name == "mealplan":
+        meal_plan = getattr(state, "meal_plan", {})
+        return {
+            "meal_plan": {day: entry.get("name", "") for day, entry in meal_plan.items()},
+            "recommendation_text": (state.recommendation_text or "")[:500],
+        }
+    elif agent_name == "execution":
+        return {
+            "order": state.order,
+        }
+    elif agent_name == "learning":
+        return {
+            "last_result": str(state.last_result)[:300] if state.last_result else None,
+        }
+
+    # Fallback: generic snapshot
+    return {"last_result": str(state.last_result)[:300] if state.last_result else None}
+
 
 # Flow definition: declarative, data-driven workflow
 CATERING_FLOW: dict[str, Any] = {
@@ -84,13 +161,17 @@ async def run_workflow(
 
         logger.info("step_start", step=step_name, agent=agent_name, trace_id=state.trace_id)
 
-        # Dispatch
-        if step.get("async"):
-            task = asyncio.create_task(agent.run(state))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
-        else:
-            state = await agent.run(state)
+        # Dispatch with observability span — attach I/O for Langfuse visibility
+        tracing: TracingContext | None = getattr(state, "_tracing", None)
+        input_snap = _agent_input(agent_name, state)
+        with trace_agent_step(tracing, agent_name=agent_name, step_name=step_name) as span:
+            if step.get("async"):
+                task = asyncio.create_task(agent.run(state))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
+            else:
+                state = await agent.run(state)
+            span.update(input=input_snap, output=_agent_output(agent_name, state))
 
         # Post-step safety hooks
         if step.get("post_check"):
@@ -157,18 +238,41 @@ async def run_planned_workflow(
     of agent steps (handles compound intents like preference + order).
     Phase 2 — Execute each step in the plan sequentially.
     """
-    # Phase 1: plan
-    available = {k for k in agent_registry if k != "orchestrator"}
-    plan_result = await planner.plan(state, available)
+    # Create observability trace for this request
+    tracing = TracingContext.create(
+        trace_id=state.trace_id,
+        user_id=state.user_id,
+        session_id=state.session_id,
+    )
+    state._tracing = tracing  # type: ignore[attr-defined]
 
-    # Phase 2: execute the plan
-    plan_steps = plan_result.get("plan", [])
-    flow_steps = [
-        {"name": step.get("reason", step["agent"]), "agent": step["agent"]} for step in plan_steps
-    ]
-    flow_def: dict[str, Any] = {"steps": flow_steps}
+    try:
+        # Phase 1: plan (traced as a span)
+        with trace_agent_step(tracing, agent_name="planner", step_name="plan") as plan_span:
+            available = {k for k in agent_registry if k != "orchestrator"}
+            plan_result = await planner.plan(state, available)
+            plan_span.update(
+                input={
+                    "user_message": state.messages[-1].get("content", "") if state.messages else ""
+                },
+                output={
+                    "intent": plan_result.get("intent"),
+                    "constraints": plan_result.get("constraints", {}),
+                    "plan": [s.get("agent") for s in plan_result.get("plan", [])],
+                },
+            )
 
-    state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
+        # Phase 2: execute the plan
+        plan_steps = plan_result.get("plan", [])
+        flow_steps = [
+            {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
+            for step in plan_steps
+        ]
+        flow_def: dict[str, Any] = {"steps": flow_steps}
+
+        state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
+    finally:
+        tracing.flush()
 
     return state
 

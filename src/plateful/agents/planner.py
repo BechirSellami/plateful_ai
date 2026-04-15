@@ -60,11 +60,22 @@ Rules:
 - "memory" should come before "menu" or "recommendation" (preferences inform filtering).
 - "execution" requires the user to have explicitly chosen an item. Do NOT add execution \
 for vague requests like "I want chicken" — that needs recommendation first.
-- If the user is ONLY stating a preference/allergy (not ordering), plan just "learning".
-- If the user wants recommendations, plan: memory → menu → recommendation.
-- If the user confirms a specific item to order, plan: execution → learning.
-- If the message combines preference + order, plan: memory → menu → execution → learning.
-- If the message combines preference + wanting suggestions, plan: memory → menu → recommendation → learning.
+
+PREFERENCE DETECTION — always include "learning" when ANY of these appear:
+- "I love …", "I like …", "I enjoy …", "I prefer …", "my favourite …"
+- "I'm allergic …", "I'm vegetarian/vegan", "I don't eat …", "I avoid …"
+- "I hate …", "I can't have …", "no nuts", "gluten-free for me"
+A preference can appear ALONGSIDE another request. Look for it even if the main \
+request is a recommendation or order.
+
+Flow patterns:
+- Preference ONLY (no order or rec request): "learning".
+- Recommendation ONLY (no preference stated): memory → menu → recommendation.
+- Preference + recommendation (e.g. "I love spicy food, what do you recommend?"): \
+memory → menu → recommendation → learning.
+- Confirm a specific item: execution → learning.
+- Preference + order: memory → menu → execution → learning.
+- Preference + vague order (needs suggestions first): memory → menu → recommendation → learning.
 
 Also extract:
 - "intent": the PRIMARY intent (order_meal, confirm_order, get_recommendation, \
@@ -124,7 +135,7 @@ class PlannerAgent:
             user_message = state.messages[-1].get("content", "")
 
         if self.mode == "llm" and self.anthropic_client is not None:
-            result = await self._plan_llm(user_message, available_agents)
+            result = await self._plan_llm(user_message, available_agents, state=state)
         else:
             result = self._plan_keyword(user_message, available_agents)
 
@@ -146,17 +157,43 @@ class PlannerAgent:
 
     # --- LLM planning ---------------------------------------------------------
 
-    async def _plan_llm(self, message: str, available_agents: set[str]) -> dict[str, Any]:
+    async def _plan_llm(
+        self,
+        message: str,
+        available_agents: set[str],
+        *,
+        state: WorkflowState | None = None,
+    ) -> dict[str, Any]:
         """Use Claude to build an execution plan. Falls back to keyword on failure."""
         try:
+            from plateful.core.observability import null_llm_trace, trace_llm_call
+
             system_prompt = _build_system_prompt(available_agents)
 
-            response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
-                model=self.model,
-                system=system_prompt,
-                messages=[{"role": "user", "content": message}],
-                max_tokens=512,
-            )
+            # Get tracing context for LLM generation recording
+            tracing = getattr(state, "_tracing", None) if state else None
+
+            if tracing is not None and tracing.is_active:
+                gen_ctx = trace_llm_call(
+                    tracing, name="planner.llm", model=self.model, input_data=message
+                )
+            else:
+                gen_ctx = null_llm_trace()
+
+            async with gen_ctx as gen:
+                response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
+                    model=self.model,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": message}],
+                    max_tokens=512,
+                )
+                gen.update(
+                    output=response.content[0].text,  # type: ignore[union-attr]
+                    usage_details={
+                        "input": response.usage.input_tokens,
+                        "output": response.usage.output_tokens,
+                    },
+                ).end()
 
             text = response.content[0].text  # type: ignore[union-attr]
             parsed = json.loads(text)
@@ -181,7 +218,7 @@ class PlannerAgent:
             return {"intent": intent, "constraints": constraints, "plan": plan}
 
         except Exception:
-            logger.warning("llm_planner_fallback", reason="api_or_parse_error")
+            logger.warning("llm_planner_fallback", reason="api_or_parse_error", exc_info=True)
             return self._plan_keyword(message, available_agents)
 
     # --- Keyword planning (fallback) ------------------------------------------
@@ -189,15 +226,21 @@ class PlannerAgent:
     def _plan_keyword(self, message: str, available_agents: set[str]) -> dict[str, Any]:
         """Deterministic planning using keyword matching.
 
-        Mirrors the old IntentAgent + flow_router behavior.
+        Detects compound intents: if the message contains a preference signal
+        AND another intent (recommendation, order), the learning agent is
+        appended to persist the preference.
         """
         from plateful.agents.intent import IntentAgent
         from plateful.core.flow_router import get_flow_for_intent
+        from plateful.core.preference_signals import has_preference_signal
 
         # Reuse IntentAgent's keyword classification
         agent = IntentAgent(mode="keyword")
         intent = agent._classify_keyword(message)
         constraints = agent._extract_constraints(message)
+
+        # Detect embedded preference
+        has_preference = has_preference_signal(message)
 
         # Map to plan via the existing flow router
         flow = get_flow_for_intent(intent, available_agents)
@@ -209,5 +252,14 @@ class PlannerAgent:
             for s in steps
             if s["name"] != "understand" and s["agent"] in available_agents
         ]
+
+        # If a preference is embedded alongside a non-preference intent, append learning
+        if (
+            has_preference
+            and intent != "declare_preference"
+            and "learning" in available_agents
+            and not any(s["agent"] == "learning" for s in plan)
+        ):
+            plan.append({"agent": "learning", "reason": "Persist user preference"})
 
         return {"intent": intent, "constraints": constraints, "plan": plan}

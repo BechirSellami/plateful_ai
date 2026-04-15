@@ -19,6 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+observability = [
+    "langfuse>=2.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.25.0",
@@ -76,7 +79,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["mem0", "mem0.*", "mem0ai.*", "testcontainers.*"]
+module = ["mem0", "mem0.*", "mem0ai.*", "testcontainers.*", "langfuse", "langfuse.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
 

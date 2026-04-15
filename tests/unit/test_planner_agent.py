@@ -101,6 +101,36 @@ class TestPlannerKeyword:
         agents = [s["agent"] for s in result["plan"]]
         assert "memory" not in agents
 
+    async def test_preference_plus_recommendation_appends_learning(self) -> None:
+        """'I love spicy food, what do you recommend?' → recommendation flow + learning."""
+        planner = PlannerAgent(mode="keyword")
+        state = _make_state("I love spicy food, what do you recommend?")
+        result = await planner.plan(state, ALL_AGENTS)
+
+        agents = [s["agent"] for s in result["plan"]]
+        assert "recommendation" in agents
+        assert "learning" in agents
+        # learning should be last
+        assert agents[-1] == "learning"
+
+    async def test_preference_plus_order_appends_learning(self) -> None:
+        """'I enjoy Italian, order me a pasta' → order flow + learning."""
+        planner = PlannerAgent(mode="keyword")
+        state = _make_state("I enjoy Italian, order me a pasta")
+        result = await planner.plan(state, ALL_AGENTS)
+
+        agents = [s["agent"] for s in result["plan"]]
+        assert "learning" in agents
+
+    async def test_no_double_learning_for_preference_intent(self) -> None:
+        """'I'm allergic to peanuts' classified as declare_preference already has learning."""
+        planner = PlannerAgent(mode="keyword")
+        state = _make_state("I'm allergic to peanuts")
+        result = await planner.plan(state, ALL_AGENTS)
+
+        agents = [s["agent"] for s in result["plan"]]
+        assert agents.count("learning") == 1
+
 
 # ---------------------------------------------------------------------------
 # LLM mode
