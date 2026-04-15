@@ -117,7 +117,14 @@ class TestTracingContext:
         mock_root_span = MagicMock()
         mock_client.start_observation.return_value = mock_root_span
 
-        with patch("plateful.core.observability.get_langfuse", return_value=mock_client):
+        # Provide a fake langfuse.types module so the deferred import
+        # inside TracingContext.create succeeds even when langfuse is
+        # not installed (e.g. in CI).
+        mock_types = MagicMock()
+        with (
+            patch.dict("sys.modules", {"langfuse": MagicMock(), "langfuse.types": mock_types}),
+            patch("plateful.core.observability.get_langfuse", return_value=mock_client),
+        ):
             ctx = TracingContext.create(trace_id="t1", user_id="u1", session_id="s1")
             assert ctx.is_active
 
