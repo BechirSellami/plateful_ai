@@ -33,6 +33,8 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
 
     # Session-level state that persists across turns
     session_meal_plan: dict[str, dict[str, Any]] = {}
+    session_menu_items: list[dict[str, Any]] = []
+    session_recommendations: list[dict[str, Any]] = []
 
     try:
         while True:
@@ -46,12 +48,15 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 await ws.send_json({"type": "error", "detail": "Empty message"})
                 continue
 
-            # Build state, carrying forward the meal plan from prior turns
+            # Build state, carrying forward context from prior turns so
+            # order_meal flows can resolve items seen during recommendation.
             state = WorkflowState(
                 user_id=user_id,
                 session_id=session_id,
                 messages=[{"role": "user", "content": message}],
                 meal_plan=dict(session_meal_plan),
+                menu_items=list(session_menu_items),
+                recommendations=list(session_recommendations),
             )
 
             try:
@@ -138,9 +143,13 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     "meal_plan": state.meal_plan or None,
                 }
 
-                # Persist meal plan across turns
+                # Persist context across turns
                 if state.meal_plan:
                     session_meal_plan = dict(state.meal_plan)
+                if state.menu_items:
+                    session_menu_items = list(state.menu_items)
+                if state.recommendations:
+                    session_recommendations = list(state.recommendations)
 
                 await ws.send_json(result)
 
