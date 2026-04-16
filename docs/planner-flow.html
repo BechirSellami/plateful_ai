@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plateful AI — LLM Planner Flow</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e2e4e9;
+    --muted: #8b8fa3;
+    --accent: #7c6aef;
+    --accent-soft: rgba(124,106,239,.12);
+    --green: #34d399;
+    --green-soft: rgba(52,211,153,.12);
+    --amber: #fbbf24;
+    --amber-soft: rgba(251,191,36,.12);
+    --red: #f87171;
+    --red-soft: rgba(248,113,113,.12);
+    --blue: #60a5fa;
+    --blue-soft: rgba(96,165,250,.12);
+    --cyan: #22d3ee;
+    --cyan-soft: rgba(34,211,238,.12);
+    --radius: 10px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 48px 24px;
+    line-height: 1.5;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+    letter-spacing: -0.02em;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: .85rem;
+    margin-bottom: 48px;
+  }
+  .flow {
+    max-width: 640px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* ── Nodes ── */
+  .node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    position: relative;
+  }
+  .node .label {
+    font-weight: 600;
+    font-size: .9rem;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .node .detail {
+    color: var(--muted);
+    font-size: .78rem;
+    line-height: 1.55;
+  }
+  .node code {
+    background: rgba(255,255,255,.06);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: .75rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  .badge {
+    font-size: .65rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+
+  /* colour variants */
+  .node.entry    { border-color: var(--accent); }
+  .node.entry .badge   { background: var(--accent-soft); color: var(--accent); }
+  .node.process  { border-color: var(--blue); }
+  .node.process .badge { background: var(--blue-soft); color: var(--blue); }
+  .node.decision { border-color: var(--amber); border-style: dashed; }
+  .node.decision .badge { background: var(--amber-soft); color: var(--amber); }
+  .node.output   { border-color: var(--green); }
+  .node.output .badge  { background: var(--green-soft); color: var(--green); }
+  .node.error    { border-color: var(--red); border-style: dashed; }
+  .node.error .badge   { background: var(--red-soft); color: var(--red); }
+  .node.trace    { border-color: var(--cyan); }
+  .node.trace .badge   { background: var(--cyan-soft); color: var(--cyan); }
+
+  /* ── Arrows ── */
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 36px;
+    position: relative;
+  }
+  .arrow::before {
+    content: '';
+    width: 2px;
+    height: 100%;
+    background: var(--border);
+    position: absolute;
+  }
+  .arrow::after {
+    content: '';
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--muted);
+    position: absolute;
+    bottom: 0;
+  }
+  .arrow .arrow-label {
+    background: var(--bg);
+    color: var(--muted);
+    font-size: .7rem;
+    padding: 0 8px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── Branch pair ── */
+  .branch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 0;
+  }
+  .branch-arrow {
+    display: flex;
+    height: 36px;
+    position: relative;
+  }
+  .branch-arrow .left-line,
+  .branch-arrow .right-line {
+    flex: 1;
+    position: relative;
+  }
+  .branch-arrow .left-line::before,
+  .branch-arrow .right-line::before {
+    content: '';
+    position: absolute;
+    width: 2px;
+    height: 100%;
+    background: var(--border);
+  }
+  .branch-arrow .left-line::before  { left: 50%; transform: translateX(-50%); }
+  .branch-arrow .right-line::before { left: 50%; transform: translateX(-50%); }
+  .branch-arrow .left-line::after,
+  .branch-arrow .right-line::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--muted);
+  }
+  .branch-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: .68rem;
+    color: var(--muted);
+    background: var(--bg);
+    padding: 0 6px;
+    z-index: 1;
+  }
+  .branch-arrow .left-line .branch-label  { left: 50%; transform: translate(-50%, -50%); }
+  .branch-arrow .right-line .branch-label { left: 50%; transform: translate(-50%, -50%); }
+
+  /* fork connector */
+  .fork-top {
+    display: flex;
+    height: 28px;
+    position: relative;
+    justify-content: center;
+  }
+  .fork-top::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 50%;
+    background: var(--border);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .fork-top::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 25%;
+    right: 25%;
+    height: 2px;
+    background: var(--border);
+  }
+
+  /* ── Prompt box ── */
+  .prompt-box {
+    background: rgba(124,106,239,.05);
+    border: 1px solid rgba(124,106,239,.2);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-top: 4px;
+  }
+  .prompt-box .prompt-title {
+    font-size: .72rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: 8px;
+  }
+  .prompt-box ul {
+    list-style: none;
+    padding: 0;
+  }
+  .prompt-box li {
+    font-size: .75rem;
+    color: var(--muted);
+    padding: 2px 0;
+    padding-left: 14px;
+    position: relative;
+  }
+  .prompt-box li::before {
+    content: '>';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-family: monospace;
+    font-size: .7rem;
+  }
+
+  /* ── Agents grid ── */
+  .agents-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .agent-chip {
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    text-align: center;
+    font-size: .72rem;
+    font-weight: 500;
+  }
+  .agent-chip .agent-icon {
+    font-size: .85rem;
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  /* ── Merge arrow ── */
+  .merge-top {
+    display: flex;
+    height: 28px;
+    position: relative;
+    justify-content: center;
+  }
+  .merge-top::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 25%;
+    right: 25%;
+    height: 2px;
+    background: var(--border);
+  }
+  .merge-top::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--border);
+  }
+  .merge-arrow-tip {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--muted);
+  }
+
+  .flow-patterns {
+    max-width: 640px;
+    margin: 48px auto 0;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .flow-patterns h3 {
+    font-size: .85rem;
+    font-weight: 600;
+    margin-bottom: 14px;
+    color: var(--text);
+  }
+  .pattern {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+    font-size: .78rem;
+  }
+  .pattern:last-child { border-bottom: none; }
+  .pattern .intent {
+    flex-shrink: 0;
+    width: 160px;
+    color: var(--amber);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: .72rem;
+  }
+  .pattern .steps {
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+  .pattern .step-pill {
+    background: var(--blue-soft);
+    color: var(--blue);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: .7rem;
+    font-weight: 500;
+  }
+  .pattern .step-arrow {
+    color: var(--border);
+    font-size: .7rem;
+    margin: 0 1px;
+  }
+</style>
+</head>
+<body>
+
+<h1>LLM Planner Flow</h1>
+<p class="subtitle">How <code>PlannerAgent._plan_llm()</code> derives an execution plan from a user message</p>
+
+<div class="flow">
+
+  <!-- 1. Entry -->
+  <div class="node entry">
+    <div class="label"><span class="badge">entry</span> User Message Received</div>
+    <div class="detail">
+      WebSocket delivers <code>state.messages[-1]["content"]</code> to <code>plan()</code>.<br>
+      Session carries forward <code>meal_plan</code>, <code>menu_items</code>, and <code>recommendations</code> from prior turns.
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 2. Build system prompt -->
+  <div class="node process">
+    <div class="label"><span class="badge">build</span> Assemble System Prompt</div>
+    <div class="detail">
+      <code>_build_system_prompt(available_agents, meal_plan)</code> injects:<br>
+    </div>
+    <div class="prompt-box">
+      <div class="prompt-title">Prompt components</div>
+      <ul>
+        <li>Agent catalog — descriptions of each registered agent</li>
+        <li>Ordering rules — memory before menu, menu before recommendation</li>
+        <li>Preference detection signals — "I love", "I'm allergic", etc.</li>
+        <li>10 flow patterns — recommendation, order, meal plan, compound</li>
+        <li>Meal plan context — active plan days or "no active plan"</li>
+        <li>Out-of-scope rules — reject weather, jokes, taxes, etc.</li>
+        <li>Output schema — <code>{"intent", "constraints", "plan"}</code></li>
+      </ul>
+    </div>
+    <div class="agents-grid">
+      <div class="agent-chip"><span class="agent-icon">🧠</span>memory</div>
+      <div class="agent-chip"><span class="agent-icon">📋</span>menu</div>
+      <div class="agent-chip"><span class="agent-icon">⭐</span>recommendation</div>
+      <div class="agent-chip"><span class="agent-icon">📅</span>mealplan</div>
+      <div class="agent-chip"><span class="agent-icon">🛒</span>execution</div>
+      <div class="agent-chip"><span class="agent-icon">💾</span>learning</div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 3. Claude API call -->
+  <div class="node trace">
+    <div class="label"><span class="badge">llm call</span> Claude API Request</div>
+    <div class="detail">
+      <code>anthropic_client.messages.create()</code> with model <code>claude-sonnet-4-20250514</code>, <code>max_tokens=512</code>.<br>
+      Wrapped in a Langfuse generation span (<code>trace_llm_call</code>) that records input/output tokens and latency.
+      Falls back to <code>null_llm_trace()</code> if Langfuse is disabled.
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 4. Parse response -->
+  <div class="node process">
+    <div class="label"><span class="badge">parse</span> Response Parsing &amp; Sanitization</div>
+    <div class="detail">
+      <strong>1.</strong> Strip markdown code fences (<code>```json ... ```</code>)<br>
+      <strong>2.</strong> <code>json.loads(text)</code> into <code>{"intent", "constraints", "plan"}</code><br>
+      <strong>3.</strong> Type-check: ensure <code>constraints</code> is dict, <code>plan</code> is list<br>
+      <strong>4.</strong> Filter plan steps to only agents present in <code>available_agents</code> registry
+    </div>
+  </div>
+
+  <div class="arrow"><span class="arrow-label">plan may be empty</span></div>
+
+  <!-- 5. Decision: empty plan? -->
+  <div class="node decision">
+    <div class="label"><span class="badge">decision</span> Is the plan empty?</div>
+    <div class="detail">
+      After filtering, if no valid agent steps remain, the planner must decide between
+      out-of-scope (intentional empty) or degraded fallback (LLM produced unusable output).
+    </div>
+  </div>
+
+  <!-- Fork -->
+  <div class="fork-top"></div>
+
+  <div class="branch">
+
+    <!-- Left: has steps -->
+    <div style="display:flex;flex-direction:column;gap:0;">
+      <div class="branch-arrow">
+        <div class="left-line" style="margin:0 auto;">
+          <span class="branch-label">plan has steps</span>
+        </div>
+      </div>
+      <div class="node output">
+        <div class="label"><span class="badge">return</span> Execution Plan</div>
+        <div class="detail">
+          <code>{"intent", "constraints", "plan"}</code><br>
+          Plan is an ordered list of agent steps the orchestrator will execute sequentially.
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: empty -->
+    <div style="display:flex;flex-direction:column;gap:0;">
+      <div class="branch-arrow">
+        <div class="right-line" style="margin:0 auto;">
+          <span class="branch-label">plan is empty</span>
+        </div>
+      </div>
+      <div class="node decision" style="height:100%;">
+        <div class="label"><span class="badge">decision</span> Out of scope?</div>
+        <div class="detail" style="margin-top:4px;">
+          <code>intent == "out_of_scope"</code>?<br><br>
+          <strong style="color:var(--green);">Yes</strong> &rarr; return empty plan with <code>out_of_scope</code> intent.
+          Orchestrator short-circuits with a helpful capability message.<br><br>
+          <strong style="color:var(--red);">No</strong> &rarr; LLM produced garbage. Fall back to <code>_plan_keyword()</code> deterministic planner.
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Merge -->
+  <div class="merge-top"><div class="merge-arrow-tip"></div></div>
+
+  <!-- 6. Apply to state -->
+  <div class="node process">
+    <div class="label"><span class="badge">apply</span> Hydrate Workflow State</div>
+    <div class="detail">
+      Back in <code>plan()</code>: write <code>state.intent</code>, merge <code>state.constraints</code>, set <code>state.last_result</code>.<br>
+      Log <code>plan_created</code> with trace_id, mode, intent, constraint keys, and step list.
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 7. Error boundary -->
+  <div class="node error">
+    <div class="label"><span class="badge">catch-all</span> Exception Boundary</div>
+    <div class="detail">
+      If <strong>anything</strong> in the LLM path throws (API timeout, JSON parse error, unexpected schema),
+      the entire <code>_plan_llm</code> method catches it, logs <code>llm_planner_fallback</code> with
+      <code>exc_info=True</code>, and falls back to the keyword planner. <strong>Never raises.</strong>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 8. Final output -->
+  <div class="node output">
+    <div class="label"><span class="badge">output</span> Plan Handed to Orchestrator</div>
+    <div class="detail">
+      <code>run_workflow(flow_def, state, registry)</code> receives the ordered step list.<br>
+      Agent contracts are validated in warn-mode before execution begins.<br>
+      Each step streams progress back to the client via WebSocket.
+    </div>
+  </div>
+
+</div>
+
+<!-- Flow patterns reference -->
+<div class="flow-patterns">
+  <h3>LLM-Produced Flow Patterns</h3>
+
+  <div class="pattern">
+    <span class="intent">get_recommendation</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">recommendation</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">declare_preference</span>
+    <span class="steps">
+      <span class="step-pill">learning</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">preference + rec</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">recommendation</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">learning</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">confirm_order</span>
+    <span class="steps">
+      <span class="step-pill">execution</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">learning</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">preference + order</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">execution</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">learning</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">create_mealplan</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">mealplan</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">swap in mealplan</span>
+    <span class="steps">
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">mealplan</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">submit_mealplan</span>
+    <span class="steps">
+      <span class="step-pill">execution</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">learning</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">out_of_scope</span>
+    <span class="steps" style="color:var(--red);font-size:.72rem;font-style:italic;">
+      empty plan &mdash; short-circuit with capability message
+    </span>
+  </div>
+
+</div>
+
+</body>
+</html>
