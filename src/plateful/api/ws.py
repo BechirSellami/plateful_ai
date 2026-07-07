@@ -70,9 +70,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
 
                 # Phase 1: plan
                 await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
-                with trace_agent_step(
-                    tracing, agent_name="planner", step_name="plan"
-                ) as plan_span:
+                with trace_agent_step(tracing, agent_name="planner", step_name="plan") as plan_span:
                     available = {k for k in registry}
                     plan_result = await planner.plan(state, available)
                     plan_span.update(
@@ -81,9 +79,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                             "intent": plan_result.get("intent"),
                             "constraints": plan_result.get("constraints", {}),
                             "compound_flags": plan_result.get("compound_flags", {}),
-                            "plan": [
-                                s.get("agent") for s in plan_result.get("plan", [])
-                            ],
+                            "plan": [s.get("agent") for s in plan_result.get("plan", [])],
                         },
                     )
 
