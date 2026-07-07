@@ -276,6 +276,7 @@ async def run_planned_workflow(
                 output={
                     "intent": plan_result.get("intent"),
                     "constraints": plan_result.get("constraints", {}),
+                    "compound_flags": plan_result.get("compound_flags", {}),
                     "plan": [s.get("agent") for s in plan_result.get("plan", [])],
                 },
             )

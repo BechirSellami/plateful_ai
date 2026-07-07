@@ -76,8 +76,16 @@ preferences, or the service. Examples: "What's the weather?", "Write me a poem",
 "Help me with my taxes", "Tell me a joke".
 
 CONSTRAINTS — flat object. Extract only what the user stated. Keys:
-- budget (int), dietary (string), cuisine (string), meal_type (string),
-  selected_item (string), preference (string).
+- budget (int) — maximum dollar amount.
+- dietary (string) — dietary restriction, e.g. "vegetarian", "vegan", "halal", "keto".
+- cuisine (string) — a cuisine ORIGIN, e.g. "thai", "italian", "japanese". \
+NEVER put a food item name here (e.g. "pasta" is NOT a cuisine — "italian" is).
+- meal_type (string) — "breakfast", "lunch", "dinner", or "snack".
+- selected_item (string) — the specific menu item the user chose to order.
+- preference (string) — the stated preference or restriction.
+- food_keywords (list[string]) — specific food items or categories the user mentioned, \
+e.g. ["pasta", "sandwich"]. Use this when the user asks for a food type that is NOT \
+a cuisine. Multiple values are allowed when the user says "or" / "and".
 
 COMPOUND FLAGS — flat object of booleans. Keys:
 - "has_preference": true when the user expressed a preference / allergy / dietary \
@@ -247,7 +255,12 @@ class PlannerAgent:
 
             # Out-of-scope short-circuits: no plan, no constraints.
             if intent == "out_of_scope":
-                return {"intent": "out_of_scope", "constraints": {}, "plan": []}
+                return {
+                    "intent": "out_of_scope",
+                    "constraints": {},
+                    "compound_flags": {},
+                    "plan": [],
+                }
 
             plan = compose_plan(intent, available_agents, compound_flags=compound_flags)
 
@@ -256,7 +269,12 @@ class PlannerAgent:
                 # so we don't silently return nothing to the orchestrator.
                 return self._plan_keyword(message, available_agents, state=state)
 
-            return {"intent": intent, "constraints": constraints, "plan": plan}
+            return {
+                "intent": intent,
+                "constraints": constraints,
+                "compound_flags": compound_flags,
+                "plan": plan,
+            }
 
         except Exception:
             logger.warning("llm_planner_fallback", reason="api_or_parse_error", exc_info=True)
