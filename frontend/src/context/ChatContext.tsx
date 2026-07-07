@@ -68,9 +68,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // Build display text — cards are rendered separately for
         // meal plans and recommendations; text is only for non-card content.
         let content = "";
-        const hasRecCards = data.recommendations && data.recommendations.length > 0;
+        const hasOrder = data.order?.status === "submitted" || data.order?.status === "pending_approval";
+        const hasRecCards = !hasOrder && data.recommendations && data.recommendations.length > 0;
         const hasMealPlan = data.meal_plan && Object.keys(data.meal_plan).length > 0;
-        if (hasMealPlan) {
+        if (hasOrder && data.recommendation_text) {
+          // Order was placed — show the confirmation text (e.g. "Your order
+          // has been placed! Order #X: Tofu Stir Fry ($14.00)").  Any carried-
+          // forward recommendations are stale and should not drive content.
+          content = data.recommendation_text;
+        } else if (hasMealPlan) {
           content = "";
         } else if (hasRecCards) {
           // Show only allergen warning as companion text; cards handle the rest
@@ -79,12 +85,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           content = data.recommendation_text;
         } else if (data.intent === "declare_preference") {
           content = "Got it, I'll remember that for next time!";
-        } else if (data.order?.status === "submitted") {
-          const items = data.order.items.map((i) => i.name).join(", ");
-          const total = data.order.total_usd
-            ? `$${data.order.total_usd.toFixed(2)}`
+        } else if (hasOrder) {
+          const items = data.order!.items.map((i) => i.name).join(", ");
+          const total = data.order!.total_usd
+            ? `$${data.order!.total_usd.toFixed(2)}`
             : "";
-          content = `Order placed! #${data.order.order_id}: ${items} ${total}`;
+          content = `Order placed! #${data.order!.order_id}: ${items} ${total}`;
         } else {
           content = "Done.";
         }

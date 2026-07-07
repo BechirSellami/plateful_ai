@@ -86,6 +86,13 @@ class MenuAgent:
             filters["cuisine"] = constraints["cuisine"]
         if "max_calories" in constraints:
             filters["max_calories"] = constraints["max_calories"]
+        if "food_keywords" in constraints:
+            kw = constraints["food_keywords"]
+            # Accept both list and comma-separated string from the LLM
+            if isinstance(kw, str):
+                kw = [k.strip() for k in kw.split(",") if k.strip()]
+            if isinstance(kw, list) and kw:
+                filters["food_keywords"] = kw
 
         return filters
 

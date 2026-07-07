@@ -144,11 +144,7 @@ class TestPlannerLLM:
             {
                 "intent": "order_meal",
                 "constraints": {"cuisine": "thai"},
-                "plan": [
-                    {"agent": "memory", "reason": "Load preferences"},
-                    {"agent": "menu", "reason": "Get menu"},
-                    {"agent": "recommendation", "reason": "Suggest items"},
-                ],
+                "compound_flags": {"has_preference": False},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -158,21 +154,17 @@ class TestPlannerLLM:
 
         assert result["intent"] == "order_meal"
         assert result["constraints"]["cuisine"] == "thai"
+        # Plan is composed by the flow router from the intent alone.
         agents = [s["agent"] for s in result["plan"]]
         assert agents == ["memory", "menu", "recommendation"]
 
     async def test_compound_preference_and_order(self) -> None:
-        """'I love tofu. I'll have it today' → learn + execute."""
+        """'I love tofu. I'll have it today' → confirm_order flow + learning."""
         client = _mock_anthropic_response(
             {
                 "intent": "confirm_order",
                 "constraints": {"selected_item": "Tofu Stir Fry", "preference": "loves tofu"},
-                "plan": [
-                    {"agent": "memory", "reason": "Load preferences for allergen check"},
-                    {"agent": "menu", "reason": "Get menu to resolve item"},
-                    {"agent": "execution", "reason": "Place order for Tofu Stir Fry"},
-                    {"agent": "learning", "reason": "Save tofu preference and order"},
-                ],
+                "compound_flags": {"has_preference": True},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -183,6 +175,9 @@ class TestPlannerLLM:
         agents = [s["agent"] for s in result["plan"]]
         assert "execution" in agents
         assert "learning" in agents
+        # learning is already in confirm_order's flow, so has_preference must
+        # NOT duplicate it.
+        assert agents.count("learning") == 1
         assert state.constraints["selected_item"] == "Tofu Stir Fry"
 
     async def test_preference_only(self) -> None:
@@ -190,9 +185,7 @@ class TestPlannerLLM:
             {
                 "intent": "declare_preference",
                 "constraints": {"preference": "vegetarian"},
-                "plan": [
-                    {"agent": "learning", "reason": "Save vegetarian preference"},
-                ],
+                "compound_flags": {"has_preference": True},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -204,27 +197,41 @@ class TestPlannerLLM:
         agents = [s["agent"] for s in result["plan"]]
         assert agents == ["learning"]
 
-    async def test_filters_unknown_agents_from_plan(self) -> None:
+    async def test_preference_plus_recommendation_appends_learning(self) -> None:
+        """has_preference=true with a non-preference intent appends learning."""
+        client = _mock_anthropic_response(
+            {
+                "intent": "get_recommendation",
+                "constraints": {"preference": "spicy"},
+                "compound_flags": {"has_preference": True},
+            }
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        state = _make_state("I love spicy food, what do you recommend?")
+
+        result = await planner.plan(state, ALL_AGENTS)
+
+        agents = [s["agent"] for s in result["plan"]]
+        assert agents == ["memory", "menu", "recommendation", "learning"]
+
+    async def test_limits_plan_to_available_agents(self) -> None:
+        """Steps for agents not in the registry are dropped by compose_plan."""
         client = _mock_anthropic_response(
             {
                 "intent": "order_meal",
                 "constraints": {},
-                "plan": [
-                    {"agent": "memory", "reason": "Load"},
-                    {"agent": "nonexistent_agent", "reason": "Hallucinated"},
-                    {"agent": "menu", "reason": "Get menu"},
-                ],
+                "compound_flags": {"has_preference": False},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
         state = _make_state("Order food")
 
-        result = await planner.plan(state, ALL_AGENTS)
+        # Memory is not registered in this environment — flow must still run.
+        result = await planner.plan(state, {"menu", "recommendation"})
 
         agents = [s["agent"] for s in result["plan"]]
-        assert "nonexistent_agent" not in agents
-        assert "memory" in agents
-        assert "menu" in agents
+        assert "memory" not in agents
+        assert agents == ["menu", "recommendation"]
 
     async def test_falls_back_on_api_error(self) -> None:
         client = AsyncMock()
@@ -238,12 +245,17 @@ class TestPlannerLLM:
         assert result["intent"] == "order_meal"
         assert len(result["plan"]) > 0
 
-    async def test_falls_back_on_empty_plan(self) -> None:
+    async def test_falls_back_when_composed_plan_is_empty(self) -> None:
+        """Intents whose flow is empty (e.g. check_order_status today) fall back.
+
+        Prevents the orchestrator from receiving a no-op plan when the LLM
+        classifies into an intent that has no registered handler yet.
+        """
         client = _mock_anthropic_response(
             {
-                "intent": "order_meal",
+                "intent": "check_order_status",
                 "constraints": {},
-                "plan": [],
+                "compound_flags": {"has_preference": False},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -251,9 +263,25 @@ class TestPlannerLLM:
 
         result = await planner.plan(state, ALL_AGENTS)
 
-        # Empty plan triggers keyword fallback
+        # Keyword fallback reclassifies and builds a non-empty plan.
         assert result["intent"] == "order_meal"
         assert len(result["plan"]) > 0
+
+    async def test_out_of_scope_returns_empty_plan(self) -> None:
+        client = _mock_anthropic_response(
+            {
+                "intent": "out_of_scope",
+                "constraints": {},
+                "compound_flags": {"has_preference": False},
+            }
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        state = _make_state("What's the weather?")
+
+        result = await planner.plan(state, ALL_AGENTS)
+
+        assert result["intent"] == "out_of_scope"
+        assert result["plan"] == []
 
     async def test_falls_back_on_invalid_json(self) -> None:
         text_block = MagicMock()
@@ -311,11 +339,7 @@ class TestRunPlannedWorkflow:
             {
                 "intent": "get_recommendation",
                 "constraints": {},
-                "plan": [
-                    {"agent": "memory", "reason": "Load prefs"},
-                    {"agent": "menu", "reason": "Get menu"},
-                    {"agent": "recommendation", "reason": "Suggest"},
-                ],
+                "compound_flags": {"has_preference": False},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -349,12 +373,7 @@ class TestRunPlannedWorkflow:
             {
                 "intent": "confirm_order",
                 "constraints": {"selected_item": "Tofu Stir Fry"},
-                "plan": [
-                    {"agent": "memory", "reason": "Load prefs"},
-                    {"agent": "menu", "reason": "Resolve item"},
-                    {"agent": "execution", "reason": "Place order"},
-                    {"agent": "learning", "reason": "Save preference + order"},
-                ],
+                "compound_flags": {"has_preference": True},
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)

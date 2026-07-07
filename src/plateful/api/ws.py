@@ -70,9 +70,18 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
 
                 # Phase 1: plan
                 await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
-                with trace_agent_step(tracing, agent_name="planner", step_name="plan"):
+                with trace_agent_step(tracing, agent_name="planner", step_name="plan") as plan_span:
                     available = {k for k in registry}
                     plan_result = await planner.plan(state, available)
+                    plan_span.update(
+                        input={"user_message": message},
+                        output={
+                            "intent": plan_result.get("intent"),
+                            "constraints": plan_result.get("constraints", {}),
+                            "compound_flags": plan_result.get("compound_flags", {}),
+                            "plan": [s.get("agent") for s in plan_result.get("plan", [])],
+                        },
+                    )
 
                 # Short-circuit for out-of-scope requests
                 if plan_result.get("intent") == "out_of_scope":
@@ -119,13 +128,19 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                         await db_session.commit()
                     tracing.flush()
 
-                # Build result payload
+                # Build result payload.
+                # When an order was placed, recommendations are stale
+                # carry-forward data — omit them so the frontend shows
+                # the order confirmation instead of misleading rec cards.
+                has_order = bool(state.order)
                 result: dict[str, Any] = {
                     "type": "result",
                     "intent": state.intent,
                     "constraints": state.constraints,
                     "menu_items_count": len(state.menu_items),
-                    "recommendations": [
+                    "recommendations": []
+                    if has_order
+                    else [
                         {
                             "name": r.get("name"),
                             "price_usd": r.get("price_usd"),

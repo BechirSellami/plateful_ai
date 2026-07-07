@@ -35,23 +35,27 @@ class TestGetFlowForIntent:
         assert "execute" not in names
 
     def test_confirm_order_executes_and_learns(self) -> None:
+        """confirm_order resolves the item (enrich + retrieve), then executes + learns.
+
+        The enrich/retrieve prefix lets the execution agent look the named
+        item up against the current menu even when session state is empty.
+        """
         flow = get_flow_for_intent(
             "confirm_order",
             {"orchestrator", "memory", "menu", "execution", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
-        assert names == ["understand", "execute", "learn"]
-        assert "enrich" not in names
-        assert "retrieve" not in names
+        assert names == ["understand", "enrich", "retrieve", "execute", "learn"]
         assert "recommend" not in names
 
     def test_confirm_order_without_execution_agent(self) -> None:
+        """Execution dropping leaves the prep + learn steps in place."""
         flow = get_flow_for_intent(
             "confirm_order",
             {"orchestrator", "memory", "menu", "learning"},
         )
         names = [s["name"] for s in flow["steps"]]
-        assert names == ["understand", "learn"]
+        assert names == ["understand", "enrich", "retrieve", "learn"]
         assert "execute" not in names
 
     def test_unknown_intent_uses_default_flow(self) -> None:

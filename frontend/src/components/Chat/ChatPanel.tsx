@@ -42,11 +42,13 @@ export default function ChatPanel() {
     return null;
   })();
 
-  // Check if an order was already placed after the last recommendations
+  // Check if an order was already placed on or after the last recommendations
   const recOrdered = (() => {
     if (lastRecMsgId === null) return false;
     const idx = messages.findIndex((m) => m.id === lastRecMsgId);
-    return messages.slice(idx + 1).some((m) => m.order);
+    // Include the recommendation message itself — it may carry both
+    // recs (from session state) and an order (from execution).
+    return messages.slice(idx).some((m) => m.order);
   })();
 
   // Find the last message that has a meal plan (for the submit button)

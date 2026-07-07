@@ -39,6 +39,13 @@ INTENT_FLOWS: dict[str, list[dict[str, Any]]] = {
         STEP_RECOMMEND,
     ],
     "confirm_order": [
+        # Enrich + retrieve run first so execution can resolve a
+        # selected_item by name against a fresh menu and apply the user's
+        # allergen profile. In stateful sessions (WebSocket) these steps
+        # are idempotent — they overwrite any carried-forward menu_items
+        # with the same day's menu.
+        STEP_ENRICH,
+        STEP_RETRIEVE,
         STEP_EXECUTE,
         STEP_LEARN,
     ],
@@ -100,3 +107,65 @@ def get_flow_for_intent(
     )
 
     return {"steps": steps}
+
+
+# Known compound flags. Kept as a list so callers can add / introspect new
+# flags in one place. Flags are booleans on ``compound_flags``:
+#
+#   has_preference — the user expressed a food preference / allergy /
+#                    dietary restriction alongside another intent.
+#                    Appends ``learning`` when it isn't already in the flow.
+#
+# When adding a new flag, update this list, ``compose_plan`` below, and the
+# PLANNER_SYSTEM_PROMPT so the LLM knows to emit it.
+COMPOUND_FLAGS: tuple[str, ...] = ("has_preference",)
+
+
+def compose_plan(
+    intent: str | None,
+    available_agents: set[str],
+    *,
+    compound_flags: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Compose the ordered list of post-classification agent steps.
+
+    This is the single source of truth for plan composition. Both the
+    LLM planner and the keyword fallback call into it so the two paths
+    stay synchronised. The ``understand`` step is stripped because by
+    the time we compose the plan, classification has already happened.
+
+    Args:
+        intent: Classified intent. Unknown intents fall back to
+            ``DEFAULT_FLOW`` via ``get_flow_for_intent``.
+        available_agents: Registry keys that currently exist. Steps for
+            unavailable agents are skipped.
+        compound_flags: Boolean flags that extend the base flow. See
+            ``COMPOUND_FLAGS`` for the supported keys.
+
+    Returns:
+        A list of ``{"agent": str, "reason": str}`` dicts — the shape
+        consumed by ``run_planned_workflow``.
+    """
+    flags = compound_flags or {}
+
+    flow = get_flow_for_intent(intent, available_agents)
+    # The planner already did ``understand`` — drop it so we don't run
+    # the orchestrator's intent classifier a second time.
+    post_steps = [s for s in flow["steps"] if s["name"] != "understand"]
+
+    plan: list[dict[str, Any]] = [
+        {"agent": s["agent"], "reason": f"Flow step: {s['name']}"} for s in post_steps
+    ]
+
+    # has_preference — append learning when the user stated a preference
+    # alongside a non-preference intent, learning is available, and the
+    # base flow doesn't already end with it.
+    if (
+        flags.get("has_preference")
+        and intent != "declare_preference"
+        and "learning" in available_agents
+        and not any(s["agent"] == "learning" for s in plan)
+    ):
+        plan.append({"agent": "learning", "reason": "Persist user preference"})
+
+    return plan

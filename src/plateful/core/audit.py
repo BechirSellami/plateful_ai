@@ -7,6 +7,7 @@ results can contain arbitrary objects that are not JSON-serialisable.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import structlog
@@ -56,7 +57,10 @@ def make_audit_fn(session: AsyncSession) -> Any:
                 output_snapshot=_safe_json(output),
             )
         except Exception:
-            # Audit must never break the pipeline
+            # Audit must never break the pipeline; rollback so the session
+            # remains usable for subsequent audit calls and the final commit.
             logger.warning("audit_write_failed", trace_id=trace_id, agent=agent, exc_info=True)
+            with contextlib.suppress(Exception):
+                await session.rollback()
 
     return _audit

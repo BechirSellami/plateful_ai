@@ -288,6 +288,17 @@ class IntentAgent:
                 return True
         return False
 
+    # Patterns that introduce a menu item name in a confirm-order message.
+    # Capture group 1 is the item name (everything after the trigger phrase,
+    # stripped of trailing punctuation).
+    _SELECTED_ITEM_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
+        re.compile(r"i'll take (?:the )?(.+)", re.IGNORECASE),
+        re.compile(r"i'll have (?:the )?(.+)", re.IGNORECASE),
+        re.compile(r"let me (?:have|get) (?:the )?(.+)", re.IGNORECASE),
+        re.compile(r"go with (?:the )?(.+)", re.IGNORECASE),
+        re.compile(r"order the (.+)", re.IGNORECASE),
+    ]
+
     def _extract_constraints(self, message: str) -> dict[str, Any]:
         constraints: dict[str, Any] = {}
         message_lower = message.lower()
@@ -322,6 +333,18 @@ class IntentAgent:
         for cuisine in cuisines:
             if cuisine in message_lower:
                 constraints["cuisine"] = cuisine
+                break
+
+        # Selected item — extract from confirm-order phrases like
+        # "I'll take the Tofu Stir Fry" → selected_item = "Tofu Stir Fry"
+        for pattern in self._SELECTED_ITEM_PATTERNS:
+            m = pattern.search(message)
+            if m:
+                # Strip trailing punctuation / whitespace but preserve
+                # the original casing from the user's message.
+                item_name = m.group(1).strip().rstrip(".,!?;:")
+                if item_name:
+                    constraints["selected_item"] = item_name
                 break
 
         return constraints
