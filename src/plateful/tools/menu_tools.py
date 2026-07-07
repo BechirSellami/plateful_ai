@@ -2,16 +2,31 @@ from decimal import Decimal
 from typing import Any
 
 
+def _matches_food_keywords(item: dict[str, Any], keywords: list[str]) -> bool:
+    """Return True if the item's name or description contains any of the keywords.
+
+    Matching is case-insensitive and uses substring search so "pasta"
+    matches "Pasta Carbonara" and "sandwich" matches "BBQ Pulled Pork
+    Sandwich".
+    """
+    name = item.get("name", "").lower()
+    desc = item.get("description", "").lower()
+    searchable = f"{name} {desc}"
+    return any(kw.lower() in searchable for kw in keywords)
+
+
 async def get_menu(
     filters: dict[str, Any] | None = None,
     menu_data: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch available menu items, optionally filtered by category, cuisine, budget, or time."""
+    """Fetch available menu items, optionally filtered by category, cuisine, budget, time, or food keywords."""
     items = menu_data or []
     if not filters:
         return [item for item in items if item.get("active", True)]
 
     result = []
+    food_keywords: list[str] = filters.get("food_keywords", [])
+
     for item in items:
         if not item.get("active", True):
             continue
@@ -30,6 +45,8 @@ async def get_menu(
         ):
             continue
         if "max_calories" in filters and (item.get("calories") or 0) > filters["max_calories"]:
+            continue
+        if food_keywords and not _matches_food_keywords(item, food_keywords):
             continue
         result.append(item)
     return result
