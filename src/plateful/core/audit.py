@@ -56,7 +56,12 @@ def make_audit_fn(session: AsyncSession) -> Any:
                 output_snapshot=_safe_json(output),
             )
         except Exception:
-            # Audit must never break the pipeline
+            # Audit must never break the pipeline; rollback so the session
+            # remains usable for subsequent audit calls and the final commit.
             logger.warning("audit_write_failed", trace_id=trace_id, agent=agent, exc_info=True)
+            try:
+                await session.rollback()
+            except Exception:
+                pass
 
     return _audit
