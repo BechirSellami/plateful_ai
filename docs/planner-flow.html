@@ -104,6 +104,8 @@
   .node.error .badge   { background: var(--red-soft); color: var(--red); }
   .node.trace    { border-color: var(--cyan); }
   .node.trace .badge   { background: var(--cyan-soft); color: var(--cyan); }
+  .node.router   { border-color: var(--accent); border-style: dashed; }
+  .node.router .badge  { background: var(--accent-soft); color: var(--accent); }
 
   /* ── Arrows ── */
   .arrow {
@@ -313,6 +315,7 @@
     border-top: 6px solid var(--muted);
   }
 
+  /* ── Flow patterns table ── */
   .flow-patterns {
     max-width: 640px;
     margin: 48px auto 0;
@@ -324,8 +327,13 @@
   .flow-patterns h3 {
     font-size: .85rem;
     font-weight: 600;
-    margin-bottom: 14px;
+    margin-bottom: 4px;
     color: var(--text);
+  }
+  .flow-patterns .section-note {
+    font-size: .73rem;
+    color: var(--muted);
+    margin-bottom: 14px;
   }
   .pattern {
     display: flex;
@@ -338,7 +346,7 @@
   .pattern:last-child { border-bottom: none; }
   .pattern .intent {
     flex-shrink: 0;
-    width: 160px;
+    width: 170px;
     color: var(--amber);
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: .72rem;
@@ -358,10 +366,49 @@
     font-size: .7rem;
     font-weight: 500;
   }
+  .pattern .step-pill.flag {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
   .pattern .step-arrow {
     color: var(--border);
     font-size: .7rem;
     margin: 0 1px;
+  }
+
+  /* ── Constraints reference ── */
+  .constraints-ref {
+    max-width: 640px;
+    margin: 24px auto 0;
+    padding: 20px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .constraints-ref h3 {
+    font-size: .85rem;
+    font-weight: 600;
+    margin-bottom: 14px;
+    color: var(--text);
+  }
+  .constraint-row {
+    display: flex;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+    font-size: .78rem;
+  }
+  .constraint-row:last-child { border-bottom: none; }
+  .constraint-row .key {
+    flex-shrink: 0;
+    width: 140px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: .72rem;
+    color: var(--cyan);
+  }
+  .constraint-row .desc {
+    color: var(--muted);
+    font-size: .75rem;
   }
 </style>
 </head>
@@ -387,18 +434,18 @@
   <div class="node process">
     <div class="label"><span class="badge">build</span> Assemble System Prompt</div>
     <div class="detail">
-      <code>_build_system_prompt(available_agents, meal_plan)</code> injects:<br>
+      <code>_build_system_prompt(available_agents, meal_plan)</code> injects:
     </div>
     <div class="prompt-box">
       <div class="prompt-title">Prompt components</div>
       <ul>
-        <li>Agent catalog — descriptions of each registered agent</li>
-        <li>Ordering rules — memory before menu, menu before recommendation</li>
-        <li>Preference detection signals — "I love", "I'm allergic", etc.</li>
-        <li>10 flow patterns — recommendation, order, meal plan, compound</li>
+        <li>Agent catalog — descriptions of each registered agent (context only; LLM does not pick agents)</li>
+        <li>Intent guide — 9 intent definitions with examples</li>
+        <li>Constraint schema — typed fields including <code>food_keywords</code> and <code>cuisine</code> distinction</li>
+        <li>Compound flags — <code>has_preference</code> detection signals ("I love", "I'm allergic", etc.)</li>
         <li>Meal plan context — active plan days or "no active plan"</li>
         <li>Out-of-scope rules — reject weather, jokes, taxes, etc.</li>
-        <li>Output schema — <code>{"intent", "constraints", "plan"}</code></li>
+        <li>Output schema — <code>{"intent", "constraints", "compound_flags"}</code> — no <code>plan</code> field</li>
       </ul>
     </div>
     <div class="agents-grid">
@@ -418,7 +465,7 @@
     <div class="label"><span class="badge">llm call</span> Claude API Request</div>
     <div class="detail">
       <code>anthropic_client.messages.create()</code> with model <code>claude-sonnet-4-20250514</code>, <code>max_tokens=512</code>.<br>
-      Wrapped in a Langfuse generation span (<code>trace_llm_call</code>) that records input/output tokens and latency.
+      Wrapped in a Langfuse generation span (<code>planner.llm</code>) recording input/output tokens and latency.
       Falls back to <code>null_llm_trace()</code> if Langfuse is disabled.
     </div>
   </div>
@@ -429,21 +476,35 @@
   <div class="node process">
     <div class="label"><span class="badge">parse</span> Response Parsing &amp; Sanitization</div>
     <div class="detail">
-      <strong>1.</strong> Strip markdown code fences (<code>```json ... ```</code>)<br>
-      <strong>2.</strong> <code>json.loads(text)</code> into <code>{"intent", "constraints", "plan"}</code><br>
-      <strong>3.</strong> Type-check: ensure <code>constraints</code> is dict, <code>plan</code> is list<br>
-      <strong>4.</strong> Filter plan steps to only agents present in <code>available_agents</code> registry
+      <strong>1.</strong> Strip markdown code fences (<code>```json … ```</code>)<br>
+      <strong>2.</strong> <code>json.loads(text)</code> → <code>{"intent", "constraints", "compound_flags"}</code><br>
+      <strong>3.</strong> Type-check: ensure <code>constraints</code> and <code>compound_flags</code> are dicts<br>
+      <strong>4.</strong> Short-circuit if <code>intent == "out_of_scope"</code> — return empty plan immediately
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 5. compose_plan -->
+  <div class="node router">
+    <div class="label"><span class="badge">route</span> Compose Plan via <code>flow_router.compose_plan()</code></div>
+    <div class="detail">
+      <code>compose_plan(intent, available_agents, compound_flags)</code> is the single source of truth for step ordering.<br><br>
+      <strong>Step 1</strong> — look up <code>INTENT_FLOWS[intent]</code> for the base step list.<br>
+      <strong>Step 2</strong> — filter steps whose agent is not in <code>available_agents</code>.<br>
+      <strong>Step 3</strong> — if <code>compound_flags.has_preference</code> is true AND intent is not <code>declare_preference</code>
+      AND <code>learning</code> is not already in the plan, append <code>learning</code>.<br><br>
+      The LLM never picks agents or orders steps — it only classifies.
     </div>
   </div>
 
   <div class="arrow"><span class="arrow-label">plan may be empty</span></div>
 
-  <!-- 5. Decision: empty plan? -->
+  <!-- 6. Decision -->
   <div class="node decision">
-    <div class="label"><span class="badge">decision</span> Is the plan empty?</div>
+    <div class="label"><span class="badge">decision</span> Is the composed plan empty?</div>
     <div class="detail">
-      After filtering, if no valid agent steps remain, the planner must decide between
-      out-of-scope (intentional empty) or degraded fallback (LLM produced unusable output).
+      An empty result means the intent had no registered flow steps after agent filtering.
     </div>
   </div>
 
@@ -462,8 +523,8 @@
       <div class="node output">
         <div class="label"><span class="badge">return</span> Execution Plan</div>
         <div class="detail">
-          <code>{"intent", "constraints", "plan"}</code><br>
-          Plan is an ordered list of agent steps the orchestrator will execute sequentially.
+          Returns <code>{"intent", "constraints", "compound_flags", "plan"}</code>.<br>
+          <code>plan</code> is an ordered list of <code>{"agent", "reason"}</code> steps.
         </div>
       </div>
     </div>
@@ -475,13 +536,11 @@
           <span class="branch-label">plan is empty</span>
         </div>
       </div>
-      <div class="node decision" style="height:100%;">
-        <div class="label"><span class="badge">decision</span> Out of scope?</div>
+      <div class="node error" style="height:100%;">
+        <div class="label"><span class="badge">fallback</span> Keyword Planner</div>
         <div class="detail" style="margin-top:4px;">
-          <code>intent == "out_of_scope"</code>?<br><br>
-          <strong style="color:var(--green);">Yes</strong> &rarr; return empty plan with <code>out_of_scope</code> intent.
-          Orchestrator short-circuits with a helpful capability message.<br><br>
-          <strong style="color:var(--red);">No</strong> &rarr; LLM produced garbage. Fall back to <code>_plan_keyword()</code> deterministic planner.
+          Unknown intent or all steps filtered → fall back to <code>_plan_keyword()</code>.<br><br>
+          Keyword path uses the same <code>compose_plan()</code> helper, so output shape is identical.
         </div>
       </div>
     </div>
@@ -491,30 +550,43 @@
   <!-- Merge -->
   <div class="merge-top"><div class="merge-arrow-tip"></div></div>
 
-  <!-- 6. Apply to state -->
+  <!-- 7. Apply to state -->
   <div class="node process">
     <div class="label"><span class="badge">apply</span> Hydrate Workflow State</div>
     <div class="detail">
       Back in <code>plan()</code>: write <code>state.intent</code>, merge <code>state.constraints</code>, set <code>state.last_result</code>.<br>
-      Log <code>plan_created</code> with trace_id, mode, intent, constraint keys, and step list.
+      Log <code>plan_created</code> with trace_id, mode, intent, constraint keys, compound_flags, and step list.
     </div>
   </div>
 
   <div class="arrow"></div>
 
-  <!-- 7. Error boundary -->
+  <!-- 8. Langfuse span -->
+  <div class="node trace">
+    <div class="label"><span class="badge">observe</span> Planner Span Updated</div>
+    <div class="detail">
+      Both the WebSocket handler (<code>ws.py</code>) and <code>run_planned_workflow</code> update the parent
+      <code>planner</code> span with the full output before closing it:<br><br>
+      <code>intent</code> · <code>constraints</code> · <code>compound_flags</code> · <code>plan</code> (agent names list)<br><br>
+      The child <code>planner.llm</code> generation span captures the raw LLM response and token counts.
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+
+  <!-- 9. Error boundary -->
   <div class="node error">
     <div class="label"><span class="badge">catch-all</span> Exception Boundary</div>
     <div class="detail">
       If <strong>anything</strong> in the LLM path throws (API timeout, JSON parse error, unexpected schema),
-      the entire <code>_plan_llm</code> method catches it, logs <code>llm_planner_fallback</code> with
-      <code>exc_info=True</code>, and falls back to the keyword planner. <strong>Never raises.</strong>
+      <code>_plan_llm</code> catches it, logs <code>llm_planner_fallback</code> with <code>exc_info=True</code>,
+      and returns the keyword planner result. <strong>Never raises.</strong>
     </div>
   </div>
 
   <div class="arrow"></div>
 
-  <!-- 8. Final output -->
+  <!-- 10. Final output -->
   <div class="node output">
     <div class="label"><span class="badge">output</span> Plan Handed to Orchestrator</div>
     <div class="detail">
@@ -526,12 +598,26 @@
 
 </div>
 
-<!-- Flow patterns reference -->
+<!-- Intent → steps reference -->
 <div class="flow-patterns">
-  <h3>LLM-Produced Flow Patterns</h3>
+  <h3>Intent → Agent Steps  <span style="font-weight:400;color:var(--muted)">(source: <code>INTENT_FLOWS</code>)</span></h3>
+  <p class="section-note">
+    Steps are composed by <code>compose_plan()</code> in <code>flow_router.py</code> — the LLM only provides the intent and flags.
+    <code style="background:var(--accent-soft);color:var(--accent);">+ learning</code> is appended automatically when
+    <code>compound_flags.has_preference = true</code> and the base flow doesn't already end with it.
+  </p>
 
   <div class="pattern">
     <span class="intent">get_recommendation</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">recommendation</span>
+    </span>
+  </div>
+
+  <div class="pattern">
+    <span class="intent">order_meal</span>
     <span class="steps">
       <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
       <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
@@ -547,25 +633,7 @@
   </div>
 
   <div class="pattern">
-    <span class="intent">preference + rec</span>
-    <span class="steps">
-      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
-      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
-      <span class="step-pill">recommendation</span><span class="step-arrow">&rarr;</span>
-      <span class="step-pill">learning</span>
-    </span>
-  </div>
-
-  <div class="pattern">
     <span class="intent">confirm_order</span>
-    <span class="steps">
-      <span class="step-pill">execution</span><span class="step-arrow">&rarr;</span>
-      <span class="step-pill">learning</span>
-    </span>
-  </div>
-
-  <div class="pattern">
-    <span class="intent">preference + order</span>
     <span class="steps">
       <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
       <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
@@ -584,14 +652,6 @@
   </div>
 
   <div class="pattern">
-    <span class="intent">swap in mealplan</span>
-    <span class="steps">
-      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
-      <span class="step-pill">mealplan</span>
-    </span>
-  </div>
-
-  <div class="pattern">
     <span class="intent">submit_mealplan</span>
     <span class="steps">
       <span class="step-pill">execution</span><span class="step-arrow">&rarr;</span>
@@ -600,12 +660,64 @@
   </div>
 
   <div class="pattern">
-    <span class="intent">out_of_scope</span>
-    <span class="steps" style="color:var(--red);font-size:.72rem;font-style:italic;">
-      empty plan &mdash; short-circuit with capability message
+    <span class="intent">ask_question</span>
+    <span class="steps">
+      <span class="step-pill">memory</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">menu</span><span class="step-arrow">&rarr;</span>
+      <span class="step-pill">recommendation</span>
     </span>
   </div>
 
+  <div class="pattern">
+    <span class="intent">out_of_scope</span>
+    <span class="steps" style="color:var(--red);font-size:.72rem;font-style:italic;">
+      empty plan &mdash; short-circuit with capability message, no agents run
+    </span>
+  </div>
+
+  <div class="pattern" style="margin-top:6px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);">
+    <span class="intent" style="color:var(--accent);">has_preference flag</span>
+    <span class="steps">
+      <span style="color:var(--muted);font-size:.72rem;margin-right:4px;">any intent above +</span>
+      <span class="step-pill flag">+ learning</span>
+      <span style="color:var(--muted);font-size:.72rem;margin-left:4px;">if not already present</span>
+    </span>
+  </div>
+
+</div>
+
+<!-- Constraints reference -->
+<div class="constraints-ref">
+  <h3>Constraint Schema  <span style="font-weight:400;color:var(--muted)">(LLM-extracted, passed to menu &amp; execution agents)</span></h3>
+
+  <div class="constraint-row">
+    <span class="key">budget: int</span>
+    <span class="desc">Maximum spend in USD, e.g. <code>20</code> from "under $20".</span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">cuisine: string</span>
+    <span class="desc">Cuisine <em>origin</em> only — e.g. <code>"thai"</code>, <code>"italian"</code>. Never a food item name.</span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">food_keywords: list[string]</span>
+    <span class="desc">Specific food items or types — e.g. <code>["pasta", "sandwich"]</code>. Used for name/description substring search when the user mentions a food that isn't a cuisine. Supports OR logic across multiple keywords.</span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">dietary: string</span>
+    <span class="desc">Restriction, e.g. <code>"vegetarian"</code>, <code>"vegan"</code>, <code>"halal"</code>, <code>"keto"</code>.</span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">meal_type: string</span>
+    <span class="desc"><code>"breakfast"</code> · <code>"lunch"</code> · <code>"dinner"</code> · <code>"snack"</code></span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">selected_item: string</span>
+    <span class="desc">Specific item the user chose to order, e.g. <code>"Tofu Stir Fry"</code>. Drives execution agent item resolution.</span>
+  </div>
+  <div class="constraint-row">
+    <span class="key">preference: string</span>
+    <span class="desc">Stated preference or restriction, e.g. <code>"loves spicy food"</code>. Persisted by the learning agent.</span>
+  </div>
 </div>
 
 </body>
