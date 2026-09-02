@@ -64,15 +64,23 @@ class TestValidatePlanHappyPath:
         assert result.is_valid, result.issues
         assert "meal_plan" in result.produced_outputs
 
-    def test_confirm_order_with_selected_item_is_valid(self) -> None:
-        """Confirm-order flows rely on the planner extracting selected_item."""
+    def test_confirm_order_with_selected_item_and_menu_items_is_valid(self) -> None:
+        """Realistic confirm_order: menu ran (this turn or a prior one), so
+        the item named by selected_item has actually passed the allergen
+        filter."""
         steps = [
             {"agent": "execution", "name": "execute"},
             {"agent": "learning", "name": "learn"},
         ]
         result = validate_plan(
             steps,
-            initial_outputs={"user_message", "intent", "constraints", "selected_item"},
+            initial_outputs={
+                "user_message",
+                "intent",
+                "constraints",
+                "selected_item",
+                "menu_items",
+            },
         )
         assert result.is_valid, result.issues
 
@@ -132,6 +140,20 @@ class TestValidatePlanRequiredAny:
         ]
         result = validate_plan(steps)
         assert result.is_valid, result.issues
+
+    def test_execution_with_only_selected_item_is_error(self) -> None:
+        """Safety invariant: selected_item alone must never satisfy
+        execution's inputs — it bypasses the allergen filter. This is the
+        exact plan shape a dynamic planner could produce for "I'll take the
+        Pad Thai" if it skips the menu step. See
+        tests/evals/plan_safety_redteam.py for the adversarial suite."""
+        steps = [{"agent": "execution", "name": "execute"}]
+        result = validate_plan(
+            steps,
+            initial_outputs={"user_message", "intent", "constraints", "selected_item"},
+        )
+        assert not result.is_valid
+        assert any(i.code == "missing_required_any" for i in result.errors)
 
 
 @pytest.mark.unit

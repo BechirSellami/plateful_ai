@@ -10,16 +10,20 @@ Built with Python 3.12+, FastAPI, SQLAlchemy (async), Postgres, Mem0 Cloud, and 
 
 ## What this demonstrates
 
-**LLM planning with deterministic control.** Claude classifies intent, extracts
-structured constraints, and detects compound requests such as "I love spicy food;
-order the tofu today." The actual agent sequence is composed by a deterministic
-flow router, so the LLM informs the workflow without owning execution order.
+**LLM-driven dynamic planning, deterministically gated.** Claude classifies
+intent, extracts structured constraints, detects compound requests such as
+"I love spicy food; order the tofu today," and composes the ordered agent
+plan itself. A deterministic Plan Validator checks that plan against
+declared agent contracts before anything executes — an invalid or unsafe
+plan (e.g. one that would place an order without the allergen filter having
+run) is rejected and replaced with a deterministic fallback, so the LLM has
+real planning freedom without unchecked authority over execution.
 
 **Purpose-built agents with clear responsibilities.**
 
 | Agent | Responsibility |
 |---|---|
-| Planner | Converts a user turn into intent, constraints, compound flags, and an execution plan |
+| Planner | Converts a user turn into intent, constraints, compound flags, and the ordered execution plan itself |
 | Memory | Retrieves user preferences, allergies, dietary restrictions, and order history from Mem0 |
 | Menu | Fetches menu items and applies deterministic filters for budget, cuisine, availability, and allergens |
 | Recommendation | Ranks items deterministically, then uses Claude for concise personalized recommendations |
@@ -42,8 +46,8 @@ such as "swap Tuesday for pasta" or "yes, order it."
 
 **Observability and auditability.** Each planner and agent step records structured
 inputs and outputs for trace inspection, including LLM token usage when available.
-Agent contracts validate planned workflows in warn mode, and audit snapshots can
-be persisted to Postgres after each step.
+Agent contracts gate every planner-proposed workflow before execution (not just a
+warn-mode check), and audit snapshots can be persisted to Postgres after each step.
 
 **Graceful degradation.** If Claude or Mem0 is unavailable, the app can still run
 with deterministic keyword planning and scoring, keeping the demo usable without
@@ -55,7 +59,10 @@ external AI services.
 User message
   -> PlannerAgent
        -> intent + constraints + compound flags
-       -> deterministic flow_router.compose_plan()
+       -> proposed execution plan (LLM-composed)
+  -> Plan Validator (checks plan against AGENT_CONTRACTS)
+       -> valid   -> execute as proposed
+       -> invalid -> deterministic flow_router.compose_plan() fallback
   -> Ordered agent workflow
        -> memory -> menu -> recommendation / mealplan / execution -> learning
   -> WebSocket/API response + traces + audit snapshots
@@ -69,7 +76,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install -e ".[dev]"
+pip install -e ".[dev,observability]"
 
 # Start Postgres
 docker compose up -d

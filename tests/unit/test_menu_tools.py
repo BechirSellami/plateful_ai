@@ -50,6 +50,26 @@ class TestGetMenu:
         result = await get_menu(filters=None, menu_data=SAMPLE_ITEMS)
         assert len(result) == 2
 
+    async def test_filters_by_exact_cuisine(self) -> None:
+        result = await get_menu(filters={"cuisine": "thai"}, menu_data=SAMPLE_ITEMS)
+        assert [i["name"] for i in result] == ["Bowl"]
+
+    async def test_filters_by_cuisine_umbrella_group(self) -> None:
+        """'asian' isn't a literal cuisine tag on any item — it must match
+        via CUISINE_GROUPS, not an exact string comparison. Regression
+        test for a real bug: a request for 'asian' food returned zero
+        items because no seed item is tagged literally 'asian'."""
+        result = await get_menu(filters={"cuisine": "asian"}, menu_data=SAMPLE_ITEMS)
+        assert [i["name"] for i in result] == ["Bowl"]  # thai is in the asian group
+
+    async def test_cuisine_group_does_not_match_unrelated_cuisine(self) -> None:
+        result = await get_menu(filters={"cuisine": "asian"}, menu_data=SAMPLE_ITEMS)
+        assert "Pasta" not in [i["name"] for i in result]  # italian is not asian
+
+    async def test_unknown_cuisine_falls_back_to_exact_match(self) -> None:
+        result = await get_menu(filters={"cuisine": "vegan"}, menu_data=SAMPLE_ITEMS)
+        assert result == []
+
 
 @pytest.mark.unit
 class TestCheckAllergens:

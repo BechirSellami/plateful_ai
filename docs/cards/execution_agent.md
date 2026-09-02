@@ -23,6 +23,8 @@ Resolves which item to order using a priority chain:
 
 Supports fuzzy matching: *"the chicken bowl"* matches *"Grilled Chicken Bowl"* by keyword overlap.
 
+> **Why `constraints.selected_item` alone is safe to resolve against here, but not sufficient for a plan to reach this agent in the first place**: this agent trusts whatever menu context is already in `WorkflowState` at runtime — that's its job. What guarantees a *filtered* menu is actually in scope before this agent ever runs is the Plan Validator's contract for `execution` (see the Planner Agent card): it explicitly refuses to accept a bare `selected_item` as sufficient justification for a plan to include this step, requiring `menu`/`recommendations`/`meal_plan` to have run first. This agent doesn't need to know that — it's an upstream, plan-level guarantee, not something checked here.
+
 ### 2. Meal Plan Submission
 When `intent == submit_mealplan`, converts the active 5-day plan into a **multi-item weekly order**:
 - Extracts all plan entries (Monday–Friday) as order line items

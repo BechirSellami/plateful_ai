@@ -142,11 +142,24 @@ AGENT_CONTRACTS: dict[str, AgentContract] = {
     ),
     "execution": AgentContract(
         name="execution",
-        # Execution will order: an explicitly named item, the top
-        # recommendation, the current meal_plan, or (as a last resort) the
-        # first menu item. The contract captures all legitimate inputs.
-        requires_any=(("selected_item", "recommendations", "meal_plan", "menu_items"),),
-        optional=("approval_decision", "user_profile"),
+        # Safety invariant: every alternative here must already have passed
+        # through the Menu Agent's deterministic allergen filter, directly
+        # or transitively.
+        #   - "menu_items"      — the filter ran directly.
+        #   - "recommendations" — self-vetted: the recommendation contract
+        #     requires "menu_items", so it can only exist if the filter ran.
+        #   - "meal_plan"       — self-vetted: the mealplan contract also
+        #     requires "menu_items" at creation time.
+        # "selected_item" is deliberately EXCLUDED from this group. It is
+        # extracted straight from the user's message by the planner and
+        # carries no such guarantee — a plan of just [execution] using only
+        # selected_item would let a named item reach an order with the
+        # allergen filter never having run. Execution still reads
+        # selected_item at runtime to resolve *which* item to order (see
+        # `optional`); the contract just refuses to treat it as sufficient
+        # on its own. See tests/evals/plan_safety_redteam.py.
+        requires_any=(("recommendations", "meal_plan", "menu_items"),),
+        optional=("selected_item", "approval_decision", "user_profile"),
         produces=("order", "recommendation_text"),
         side_effect=True,
     ),

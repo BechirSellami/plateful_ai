@@ -153,7 +153,7 @@ class RecommendationAgent:
 
             # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None
-            model = "claude-sonnet-4-20250514"
+            model = "claude-sonnet-5"
 
             if tracing is not None and tracing.is_active:
                 gen_ctx = trace_llm_call(
@@ -170,7 +170,9 @@ class RecommendationAgent:
                     max_tokens=512,
                 )
                 gen.update(
-                    output=response.content[0].text if response.content else "",
+                    output=response.content[0].text
+                    if response.content and response.content[0].type == "text"
+                    else "",
                     usage_details={
                         "input": response.usage.input_tokens,
                         "output": response.usage.output_tokens,

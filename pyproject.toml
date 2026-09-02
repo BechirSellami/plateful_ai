@@ -67,6 +67,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/plateful/cli.py" = ["T20", "ASYNC250"]  # CLI legitimately uses print() and blocking input()
+"tests/evals/golden_routing.py" = ["T20"]  # run_eval() is a CLI report, same as cli.py
 
 [tool.ruff.lint.isort]
 known-first-party = ["plateful"]

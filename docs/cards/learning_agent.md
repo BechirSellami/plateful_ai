@@ -33,8 +33,10 @@ Consolidates all collected events into a natural-language summary that Mem0 can 
 - Formats into a message structure Mem0 expects
 - Tags with user ID for personalized retrieval later
 
-### 4. Async Execution
-In the full workflow definition, the Learning Agent runs as a **background task** — it doesn't block the response to the user. Preferences are saved after the user already sees their recommendation or order confirmation.
+### 4. Ordered Last, By Contract — But Not Yet Async
+The Learning Agent's declared contract marks it `post_action`: the Plan Validator requires it to be the last step in any plan that includes it, so nothing downstream ever depends on stale state.
+
+**Be precise about this if asked**: the original intent was a background task — dispatched via `asyncio.create_task`, off the response path. That mechanism exists in the code (`run_workflow`'s `step.get("async")` branch), but it's only wired into an unused legacy static flow, not the live LLM-planned path. On the live path, `learning` runs synchronously and the response is only returned after it completes. This is a known, named gap — a small, well-scoped follow-up to actually wire the existing dispatch mechanism in — not something currently true.
 
 ---
 
@@ -45,14 +47,14 @@ In the full workflow definition, the Learning Agent runs as a **background task*
 | No LLM for event extraction | Events are derived from structured state, not free text — deterministic logic is sufficient |
 | Embedded preference detection | Users embed preferences casually; missing them means losing valuable personalization data |
 | Write to Mem0, not local DB | Mem0 handles deduplication and semantic merging — if the user says "I love Thai" twice, it doesn't create duplicates |
-| Background execution | Learning never delays the user's response — personalization is a side effect, not a blocker |
+| Contract-enforced terminal position | `post_action=True` guarantees `learning` never runs before an agent that might still need to act — enforced by the Plan Validator, not just convention. (Non-blocking execution is the intended *next* step, not yet wired to the live path — see above.) |
 
 ---
 
 ## Pipeline Position
 
 ```
-Execution --> [Learning Agent]  (often runs async/background)
+Execution --> [Learning Agent]  (contract-ordered last; runs synchronously today)
                    |
               Collect events from state:
                 - preferences declared?

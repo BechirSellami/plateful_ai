@@ -1,6 +1,18 @@
 from decimal import Decimal
 from typing import Any
 
+# Umbrella/regional cuisine terms users actually say ("asian", "european")
+# mapped to the specific cuisine tags the menu data uses. Without this, a
+# request like "asian food" exact-matches nothing (no seed item is tagged
+# literally "asian") and silently returns zero items. Extend as the menu's
+# cuisine tags grow.
+CUISINE_GROUPS: dict[str, frozenset[str]] = {
+    "asian": frozenset({"thai", "chinese", "japanese", "indian", "vietnamese", "korean"}),
+    "european": frozenset({"italian", "french", "mediterranean"}),
+    "latin": frozenset({"mexican"}),
+    "latin american": frozenset({"mexican"}),
+}
+
 
 def _matches_food_keywords(item: dict[str, Any], keywords: list[str]) -> bool:
     """Return True if the item's name or description contains any of the keywords.
@@ -35,11 +47,15 @@ async def get_menu(
             and item.get("category", "").lower() != str(filters["category"]).lower()
         ):
             continue
-        if (
-            "cuisine" in filters
-            and item.get("cuisine", "").lower() != str(filters["cuisine"]).lower()
-        ):
-            continue
+        if "cuisine" in filters:
+            requested_cuisine = str(filters["cuisine"]).lower()
+            item_cuisine = item.get("cuisine", "").lower()
+            group = CUISINE_GROUPS.get(requested_cuisine)
+            if group is not None:
+                if item_cuisine not in group:
+                    continue
+            elif item_cuisine != requested_cuisine:
+                continue
         if "max_price" in filters and Decimal(str(item.get("price_usd", 0))) > Decimal(
             str(filters["max_price"])
         ):

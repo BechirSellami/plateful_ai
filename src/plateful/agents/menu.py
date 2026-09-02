@@ -26,10 +26,19 @@ class MenuAgent:
 
         items = await get_menu(filters=filters, menu_data=self._menu_data)
 
+        user_msg = state.messages[-1].get("content", "") if state.messages else ""
+
         # Step 2: Deterministic allergen filter (safety-critical, never LLM)
+        # Merge PERSISTED allergies (from Memory/Mem0) with anything
+        # declared in THIS message. A same-turn "I'm allergic to X, order
+        # me Y" must be protected immediately — it can't wait for
+        # `learning` to persist it and a future turn's Memory lookup to
+        # pick it up, and it can't depend on the planner having also
+        # copied the allergy into constraints.preference (it doesn't
+        # always). Scanning the raw message directly is the deterministic,
+        # LLM-independent path.
         user_allergens = state.user_profile.get("allergies", [])
-        # Extract allergen names from memory strings like "Allergic to peanuts"
-        allergen_names = self._extract_allergen_names(user_allergens)
+        allergen_names = self._extract_allergen_names([*user_allergens, user_msg])
 
         logger.info(
             "menu_agent_start",
@@ -49,10 +58,7 @@ class MenuAgent:
 
         # Step 2b: Detect allergen conflicts with what the user asked for
         if removed:
-            user_msg = ""
-            if state.messages:
-                user_msg = state.messages[-1].get("content", "").lower()
-            conflicts = self._find_request_conflicts(user_msg, removed)
+            conflicts = self._find_request_conflicts(user_msg.lower(), removed)
             if conflicts:
                 state.allergen_conflicts = conflicts
 

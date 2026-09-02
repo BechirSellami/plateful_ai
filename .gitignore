@@ -34,8 +34,14 @@ docker-compose.override.yml
 
 # Frontend
 frontend/node_modules/
+frontend/.vite/
 static/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Personal interview-prep notes (kept locally, not tracked)
+/docs/Demo_cheatsheet.md
+/docs/Demo_reference.md
+/plateful_ai_interview_playbook_structure.md
