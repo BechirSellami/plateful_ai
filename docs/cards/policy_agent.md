@@ -8,6 +8,8 @@
 
 The Policy Agent is the **compliance guardrail** of the pipeline. Before any order is placed, it validates the request against configurable business rules — budget caps, per-order limits, and approval thresholds. It decides whether an order can proceed automatically, needs manager approval, or should be blocked entirely.
 
+**Reachability note:** no default or fallback route (`compose_plan`/`INTENT_FLOWS`) includes this agent today. It only runs if the Planner proposes a plan that includes it *and* that plan passes the Plan Validator's contract check (its contract requires `recommendations` or `menu_items`). That makes it an LLM-reachable capability, not a guaranteed pipeline stage — describe it that way rather than as something every order necessarily passes through.
+
 ---
 
 ## Capabilities
@@ -62,7 +64,10 @@ Policies are injected at agent construction time, making them easy to customize 
 ## Pipeline Position
 
 ```
-Recommendation --> [Policy Agent] --> Execution Agent
+Recommendation --> (Planner proposed this step; Plan Validator accepted it)
+                        |
+                        v
+                  [Policy Agent] --> Execution Agent
                         |
                    Validate order total
                    against policy rules
@@ -71,6 +76,8 @@ Recommendation --> [Policy Agent] --> Execution Agent
                    requires_approval: true/false
                    violations: [...]
 ```
+
+Not every order passes through this box — only plans the Planner explicitly proposed to include it.
 
 **Reads from state:** recommendations (to calculate total), menu_items
 **Writes to state:** policy_result, requires_approval
