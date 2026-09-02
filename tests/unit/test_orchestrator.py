@@ -1,12 +1,15 @@
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from plateful.core.flow_router import compose_plan
 from plateful.core.orchestrator import (
     CATERING_FLOW,
     evaluate_condition,
     get_steps_from,
     register_safety_check,
+    resolve_validated_plan,
     run_adaptive_workflow,
     run_workflow,
 )
@@ -151,6 +154,93 @@ class TestRunWorkflow:
         await run_workflow(flow, state, {"agent1": agent})
 
         check_fn.assert_called_once_with(state)
+
+
+@pytest.mark.unit
+class TestResolveValidatedPlan:
+    """The Plan Validator gate: a contract-violating plan must never reach
+    the executor unmodified. See AGENT_CONTRACTS["execution"] and
+    tests/evals/plan_safety_redteam.py for the invariant being enforced."""
+
+    AVAILABLE: ClassVar[set[str]] = {"memory", "menu", "recommendation", "execution", "learning"}
+
+    def test_valid_plan_passes_through_unchanged(self) -> None:
+        plan_result = {
+            "intent": "get_recommendation",
+            "constraints": {},
+            "compound_flags": {},
+            "plan": [
+                {"agent": "memory", "reason": "enrich"},
+                {"agent": "menu", "reason": "retrieve"},
+                {"agent": "recommendation", "reason": "recommend"},
+            ],
+        }
+        state = WorkflowState(user_id="emp_123", session_id="s")
+
+        steps, validation, used_fallback = resolve_validated_plan(
+            plan_result, state, self.AVAILABLE
+        )
+
+        assert used_fallback is False
+        assert validation.is_valid
+        assert [s["agent"] for s in steps] == ["memory", "menu", "recommendation"]
+
+    def test_filter_bypass_plan_is_rejected_and_replaced(self) -> None:
+        """A plan that would let execution place an order on selected_item
+        alone (no menu step, no menu_items ever produced) must be rejected
+        and replaced by the deterministic, contract-valid fallback."""
+        plan_result = {
+            "intent": "confirm_order",
+            "constraints": {"selected_item": "Pad Thai"},
+            "compound_flags": {},
+            "plan": [{"agent": "execution", "reason": "order it directly"}],
+        }
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "Pad Thai"},
+        )
+
+        steps, validation, used_fallback = resolve_validated_plan(
+            plan_result, state, self.AVAILABLE
+        )
+
+        assert used_fallback is True
+        assert not validation.is_valid
+        assert any(i.code == "missing_required_any" for i in validation.errors)
+
+        expected = compose_plan("confirm_order", self.AVAILABLE, compound_flags={})
+        assert [s["agent"] for s in steps] == [s["agent"] for s in expected]
+        # The fallback must include menu ahead of execution — that's the
+        # whole point of falling back.
+        assert steps.index(next(s for s in steps if s["agent"] == "menu")) < steps.index(
+            next(s for s in steps if s["agent"] == "execution")
+        )
+
+    def test_fallback_plan_itself_validates_cleanly(self) -> None:
+        """Sanity check that the replacement plan doesn't just avoid the
+        original error while introducing a new one."""
+        plan_result = {
+            "intent": "confirm_order",
+            "constraints": {"selected_item": "Pad Thai"},
+            "compound_flags": {},
+            "plan": [{"agent": "execution", "reason": "order it directly"}],
+        }
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "Pad Thai"},
+        )
+
+        steps, _validation, used_fallback = resolve_validated_plan(
+            plan_result, state, self.AVAILABLE
+        )
+        assert used_fallback is True
+
+        from plateful.core.agent_contracts import state_to_initial_outputs, validate_plan
+
+        replay = validate_plan(steps, initial_outputs=state_to_initial_outputs(state))
+        assert replay.is_valid, replay.issues
 
 
 @pytest.mark.unit

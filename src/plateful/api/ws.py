@@ -20,7 +20,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from plateful.agents.planner import PlannerAgent
 from plateful.core.audit import make_audit_fn
 from plateful.core.observability import TracingContext, trace_agent_step
-from plateful.core.orchestrator import run_workflow
+from plateful.core.orchestrator import resolve_validated_plan, run_workflow
 from plateful.core.workflow import WorkflowState
 from plateful.db.session import async_session_factory
 
@@ -96,12 +96,28 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     )
                     tracing.flush()
                 else:
+                    # Phase 1.5: Plan Validator gate — same contract check
+                    # and deterministic fallback as the HTTP/CLI path.
+                    with trace_agent_step(
+                        tracing, agent_name="planner", step_name="validate_plan"
+                    ) as validate_span:
+                        flow_steps, validation, used_fallback = resolve_validated_plan(
+                            plan_result, state, available
+                        )
+                        validate_span.update(
+                            input={
+                                "proposed_plan": [
+                                    s.get("agent") for s in plan_result.get("plan", [])
+                                ]
+                            },
+                            output={
+                                **validation.summary(),
+                                "used_fallback": used_fallback,
+                                "executed_plan": [s["agent"] for s in flow_steps],
+                            },
+                        )
+
                     # Phase 2: execute plan
-                    plan_steps = plan_result.get("plan", [])
-                    flow_steps = [
-                        {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
-                        for step in plan_steps
-                    ]
                     flow_def: dict[str, Any] = {"steps": flow_steps}
 
                     # Compose two audit callbacks: stream progress + persist to DB

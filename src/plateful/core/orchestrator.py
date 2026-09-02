@@ -4,8 +4,8 @@ from typing import Any
 
 import structlog
 
-from plateful.core.agent_contracts import state_to_initial_outputs, validate_plan
-from plateful.core.flow_router import get_flow_for_intent
+from plateful.core.agent_contracts import ValidationResult, state_to_initial_outputs, validate_plan
+from plateful.core.flow_router import compose_plan, get_flow_for_intent
 from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.workflow import BaseAgent, WorkflowState
 
@@ -244,6 +244,72 @@ async def run_adaptive_workflow(
     return state
 
 
+def resolve_validated_plan(
+    plan_result: dict[str, Any],
+    state: WorkflowState,
+    available_agents: set[str],
+) -> tuple[list[dict[str, Any]], ValidationResult, bool]:
+    """Plan Validator gate: validate the planner's proposed plan against
+    agent contracts and fall back to the deterministic ``compose_plan``
+    flow when it fails.
+
+    This is a hard gate, not the warn-mode logging ``run_workflow`` already
+    does internally (that stays in place as a defense-in-depth net for
+    callers that build flow_defs some other way, e.g. ``run_adaptive_workflow``).
+    An LLM-proposed plan that violates a contract — most importantly, one
+    that would let ``execution`` place an order without the allergen filter
+    ever having run (see ``AGENT_CONTRACTS["execution"]``) — is never
+    executed. ``compose_plan`` is proven contract-valid for every known
+    intent (``test_intent_flow_matches_contracts``), so falling back to it
+    always yields a runnable plan.
+
+    Returns ``(steps, validation, used_fallback)``. ``validation`` reflects
+    the ORIGINAL proposed plan (for tracing/audit) even when a fallback was
+    used.
+    """
+    plan_steps = plan_result.get("plan", [])
+    flow_steps = [
+        {"name": step.get("reason", step["agent"]), "agent": step["agent"]} for step in plan_steps
+    ]
+
+    validation = validate_plan(flow_steps, initial_outputs=state_to_initial_outputs(state))
+    validation.log(trace_id=state.trace_id)
+
+    if validation.is_valid:
+        return flow_steps, validation, False
+
+    logger.warning(
+        "plan_rejected_falling_back",
+        trace_id=state.trace_id,
+        intent=plan_result.get("intent"),
+        proposed_plan=[s["agent"] for s in flow_steps],
+        errors=[i.to_dict() for i in validation.errors],
+    )
+
+    fallback = compose_plan(
+        plan_result.get("intent"),
+        available_agents,
+        compound_flags=plan_result.get("compound_flags", {}),
+    )
+    fallback_steps = [{"name": s.get("reason", s["agent"]), "agent": s["agent"]} for s in fallback]
+
+    # Should be unreachable given test_intent_flow_matches_contracts, but
+    # loud-log rather than silently execute an unvalidated plan if the
+    # fallback table and the contracts ever drift out of sync.
+    fallback_validation = validate_plan(
+        fallback_steps, initial_outputs=state_to_initial_outputs(state)
+    )
+    if not fallback_validation.is_valid:
+        logger.error(
+            "plan_fallback_also_invalid",
+            trace_id=state.trace_id,
+            intent=plan_result.get("intent"),
+            errors=[i.to_dict() for i in fallback_validation.errors],
+        )
+
+    return fallback_steps, validation, True
+
+
 async def run_planned_workflow(
     state: WorkflowState,
     agent_registry: dict[str, BaseAgent],
@@ -294,12 +360,24 @@ async def run_planned_workflow(
             )
             return state
 
+        # Phase 1.5: Plan Validator gate — reject/replace an unsafe or
+        # contract-violating plan before it ever reaches the executor.
+        with trace_agent_step(
+            tracing, agent_name="planner", step_name="validate_plan"
+        ) as validate_span:
+            flow_steps, validation, used_fallback = resolve_validated_plan(
+                plan_result, state, available
+            )
+            validate_span.update(
+                input={"proposed_plan": [s.get("agent") for s in plan_result.get("plan", [])]},
+                output={
+                    **validation.summary(),
+                    "used_fallback": used_fallback,
+                    "executed_plan": [s["agent"] for s in flow_steps],
+                },
+            )
+
         # Phase 2: execute the plan
-        plan_steps = plan_result.get("plan", [])
-        flow_steps = [
-            {"name": step.get("reason", step["agent"]), "agent": step["agent"]}
-            for step in plan_steps
-        ]
         flow_def: dict[str, Any] = {"steps": flow_steps}
 
         state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
