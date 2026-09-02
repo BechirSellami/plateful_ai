@@ -197,7 +197,7 @@ class IntentAgent:
         *,
         mode: Literal["keyword", "llm"] = "keyword",
         anthropic_client: anthropic.AsyncAnthropic | None = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-5",
     ) -> None:
         self.mode = mode
         self.anthropic_client = anthropic_client
@@ -241,6 +241,7 @@ class IntentAgent:
                 system=INTENT_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": message}],
                 max_tokens=256,
+                thinking={"type": "disabled"},
             )
 
             text = response.content[0].text  # type: ignore[union-attr]

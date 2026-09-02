@@ -78,7 +78,7 @@ async def claude_tool_loop(
     system: str,
     context: dict[str, Any],
     tools: list[Callable[..., Any]],
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-sonnet-5",
     max_iterations: int = 10,
     tracing: Any = None,
 ) -> Any:

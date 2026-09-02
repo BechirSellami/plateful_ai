@@ -252,7 +252,7 @@ Present this plan to the user in a friendly way. Explain briefly why each \
 day's pick is a good fit. End by inviting them to swap any day."""
 
             tracing = getattr(state, "_tracing", None) if state else None
-            model = "claude-sonnet-4-20250514"
+            model = "claude-sonnet-5"
 
             if tracing is not None and tracing.is_active:
                 gen_ctx = trace_llm_call(
@@ -269,7 +269,9 @@ day's pick is a good fit. End by inviting them to swap any day."""
                     max_tokens=768,
                 )
                 gen.update(
-                    output=response.content[0].text if response.content else "",
+                    output=response.content[0].text
+                    if response.content and response.content[0].type == "text"
+                    else "",
                     usage_details={
                         "input": response.usage.input_tokens,
                         "output": response.usage.output_tokens,
