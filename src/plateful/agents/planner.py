@@ -1,10 +1,19 @@
 """Planner Agent: builds an execution plan from a user message.
 
-Replaces the single-intent classification + static flow routing with an
-LLM-driven planner that can handle compound requests like
-"I love tofu. I'll have it today" → [learn preference, execute order].
+The LLM builds the ordered agent plan directly (dynamic planning) — there
+is no deterministic router composing it from the intent. The
+``AGENT_CONTRACTS`` registry is the single source of truth for what each
+agent requires/produces; this module renders it straight into the prompt
+so the model reasons over the same dependency graph the downstream Plan
+Validator (``orchestrator.resolve_validated_plan``) checks the plan
+against. That validator — not this module — is what actually gates unsafe
+or contract-violating plans; the LLM path here only does structural
+sanitization (drop malformed/unavailable-agent steps) so garbage JSON
+can't crash the caller.
 
-Falls back to keyword-based intent classification when no LLM is available.
+Falls back to keyword-based intent classification (and deterministic
+``compose_plan`` routing) when no LLM is available, the API call fails, or
+the model's plan is empty/unparseable after sanitization.
 """
 
 from __future__ import annotations
@@ -15,6 +24,7 @@ from typing import Any, ClassVar, Literal
 import anthropic
 import structlog
 
+from plateful.core.agent_contracts import AGENT_CONTRACTS
 from plateful.core.workflow import WorkflowState
 
 logger = structlog.get_logger()
@@ -51,12 +61,34 @@ AGENT_CATALOG: dict[str, str] = {
 }
 
 PLANNER_SYSTEM_PROMPT = """You are the Planner for a corporate catering assistant.
-Given a user message, classify it into an intent, extract structured constraints, and \
-flag compound signals. The orchestrator composes the execution flow deterministically \
-from your output — you do NOT pick agents or order steps.
+Given a user message, classify it into an intent, extract structured constraints, flag \
+compound signals, AND build the ordered execution plan yourself — a list of agent steps. \
+There is no separate router: you decide which agents run and in what order, subject to \
+the contract rules below. A Plan Validator checks your plan against these same contracts \
+before anything runs and replaces it with a safe deterministic fallback if it is invalid \
+— so an invalid plan is never executed, but a plan that skips a safety step is still a \
+bug worth avoiding.
 
-Available agents (shown for context so you can reason about what the system can do):
+Available agents. "requires" / "requires one of" are OTHER STEPS' outputs your plan must \
+already have produced earlier (or that CONTEXT below says already exist this session) \
+before this agent can run; "produces" is what it adds for later steps to use:
 {agent_descriptions}
+
+PLAN RULES:
+1. SAFETY-CRITICAL: never plan "execution" using a named item (selected_item) alone. \
+"execution" must be preceded by "menu" in THIS plan, UNLESS CONTEXT below already shows \
+filtered menu_items, recommendations, or an existing meal_plan available. The Menu \
+Agent's deterministic allergen filter is the only thing that guarantees a named item is \
+safe to order — skipping it is a bug no matter how confident you are the item is safe. \
+When in doubt, include "menu".
+2. A step's required inputs must already be produced by an earlier step in your plan, or \
+already available per CONTEXT. If not, insert the producing agent earlier in the plan.
+3. "learning" (and any other post-action agent) must be the LAST step(s) in the plan.
+4. Only use agents from the list above. Keep plans minimal — do not include an agent \
+that has nothing to contribute to this specific request.
+
+CONTEXT — what's already available this turn, before your plan runs:
+{context_summary}
 
 INTENTS — choose exactly ONE primary intent:
 - "order_meal"         — vague order ("I want lunch", "get me something Thai"). \
@@ -93,8 +125,9 @@ restriction alongside another intent. Look for ANY of:
     - "I love …", "I like …", "I enjoy …", "I prefer …", "my favourite …"
     - "I'm allergic …", "I'm vegetarian/vegan", "I don't eat …", "I avoid …"
     - "I hate …", "I can't have …", "no nuts", "gluten-free for me"
-  Set this flag even when the main request is a recommendation or an order — the \
-orchestrator will append a learning step to persist it.
+  Set this flag even when the main request is a recommendation or an order — include a \
+"learning" step in your plan to persist it, in addition to whatever the primary intent \
+needs. Don't duplicate "learning" if it's already the last step for another reason.
 
 MEAL PLAN CONTEXT:
 {meal_plan_context}
@@ -102,28 +135,97 @@ When the user references swapping, replacing, changing, or updating items in the
 plan, classify as "create_mealplan". If they also state a preference (e.g. "not a fan \
 of tofu, swap it"), set has_preference = true as well.
 
-Respond ONLY with valid JSON. Do NOT include a "plan" field — the orchestrator builds \
-the plan from the intent and flags.
+EXAMPLES:
 
-{{"intent": "...", "constraints": {{...}}, "compound_flags": {{...}}}}
+User: "What should I eat today?"
+{{"intent": "get_recommendation", "constraints": {{}}, "compound_flags": {{}}, "plan": \
+[{{"agent": "memory", "reason": "check dietary restrictions"}}, {{"agent": "menu", \
+"reason": "fetch today's safe items"}}, {{"agent": "recommendation", "reason": "rank and \
+suggest"}}]}}
+
+User: "I love tofu. I'll have it today"
+{{"intent": "confirm_order", "constraints": {{"selected_item": "tofu"}}, \
+"compound_flags": {{"has_preference": true}}, "plan": [{{"agent": "memory", "reason": \
+"check allergies"}}, {{"agent": "menu", "reason": "filter safe items before ordering"}}, \
+{{"agent": "execution", "reason": "place the order"}}, {{"agent": "learning", "reason": \
+"remember the preference"}}]}}
+
+User: "Looks good, submit the meal plan" (CONTEXT shows meal_plan already available)
+{{"intent": "submit_mealplan", "constraints": {{}}, "compound_flags": {{}}, "plan": \
+[{{"agent": "execution", "reason": "submit the existing meal plan"}}, {{"agent": \
+"learning", "reason": "record the order"}}]}}
+(No "menu" needed here — the meal plan's items were already filtered when it was built.)
+
+Respond ONLY with valid JSON in this exact shape:
+{{"intent": "...", "constraints": {{...}}, "compound_flags": {{...}}, "plan": \
+[{{"agent": "...", "reason": "..."}}]}}
 """
+
+
+def _contract_summary(name: str) -> str:
+    """Render an agent's declared contract as one line for the prompt.
+
+    Pulled live from ``AGENT_CONTRACTS`` rather than hand-maintained prose
+    so this can never drift from what ``validate_plan`` actually checks.
+    """
+    contract = AGENT_CONTRACTS.get(name)
+    if contract is None:
+        return "no declared contract"
+
+    parts: list[str] = []
+    if contract.requires:
+        parts.append(f"requires: {', '.join(contract.requires)}")
+    if contract.requires_any:
+        groups = " OR ".join(f"({', '.join(g)})" for g in contract.requires_any)
+        parts.append(f"requires one of: {groups}")
+    if contract.optional:
+        parts.append(f"optional: {', '.join(contract.optional)}")
+    if contract.produces:
+        parts.append(f"produces: {', '.join(contract.produces)}")
+    if contract.post_action:
+        parts.append("must run LAST")
+    if contract.side_effect:
+        parts.append("SIDE EFFECT")
+    return "; ".join(parts) if parts else "no inputs/outputs declared"
+
+
+def _context_summary(state: WorkflowState | None) -> str:
+    """Summarize what's already available this session, so the planner
+    knows when a prerequisite agent can legitimately be skipped (e.g.
+    submit_mealplan doesn't need "menu" again if menu_items already ran)."""
+
+    def _yn(value: bool) -> str:
+        return "yes" if value else "no"
+
+    return (
+        f"- filtered menu_items already available: {_yn(bool(state and state.menu_items))}\n"
+        f"- meal_plan already available: {_yn(bool(state and state.meal_plan))}\n"
+        f"- recommendations already available: {_yn(bool(state and state.recommendations))}"
+    )
 
 
 def _build_system_prompt(
     available_agents: set[str],
     *,
-    meal_plan: dict[str, Any] | None = None,
+    state: WorkflowState | None = None,
 ) -> str:
     """Build the planner system prompt with only the available agents."""
     descriptions = "\n".join(
-        f"- **{name}**: {desc}" for name, desc in AGENT_CATALOG.items() if name in available_agents
+        f"- **{name}**: {desc}\n  contract — {_contract_summary(name)}"
+        for name, desc in AGENT_CATALOG.items()
+        if name in available_agents
     )
+    meal_plan = state.meal_plan if state else None
     if meal_plan:
         plan_lines = [f"  {day}: {entry.get('name', '—')}" for day, entry in meal_plan.items()]
-        context = "The user has an ACTIVE meal plan:\n" + "\n".join(plan_lines)
+        meal_plan_context = "The user has an ACTIVE meal plan:\n" + "\n".join(plan_lines)
     else:
-        context = "No active meal plan in this session."
-    return PLANNER_SYSTEM_PROMPT.format(agent_descriptions=descriptions, meal_plan_context=context)
+        meal_plan_context = "No active meal plan in this session."
+    return PLANNER_SYSTEM_PROMPT.format(
+        agent_descriptions=descriptions,
+        meal_plan_context=meal_plan_context,
+        context_summary=_context_summary(state),
+    )
 
 
 class PlannerAgent:
@@ -139,7 +241,7 @@ class PlannerAgent:
         *,
         mode: Literal["keyword", "llm"] = "keyword",
         anthropic_client: anthropic.AsyncAnthropic | None = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-5",
     ) -> None:
         self.mode = mode
         self.anthropic_client = anthropic_client
@@ -164,7 +266,15 @@ class PlannerAgent:
         if state.messages:
             user_message = state.messages[-1].get("content", "")
 
-        if self.mode == "llm" and self.anthropic_client is not None:
+        result: dict[str, Any]
+        if not user_message.strip():
+            result = {
+                "intent": "out_of_scope",
+                "constraints": {},
+                "compound_flags": {},
+                "plan": [],
+            }
+        elif self.mode == "llm" and self.anthropic_client is not None:
             result = await self._plan_llm(user_message, available_agents, state=state)
         else:
             result = self._plan_keyword(user_message, available_agents, state=state)
@@ -194,20 +304,21 @@ class PlannerAgent:
         *,
         state: WorkflowState | None = None,
     ) -> dict[str, Any]:
-        """Classify the message with Claude, then compose the plan via the flow router.
+        """Classify the message AND build the ordered plan directly with Claude.
 
-        The LLM is responsible for intent + constraint + flag extraction ONLY.
-        Plan composition lives in ``flow_router.compose_plan`` so the keyword
-        fallback and the LLM path produce identical structures for the same
-        classification. Falls back to the keyword planner on any API, parse,
-        or validation failure.
+        This method only does structural sanitization on the model's plan —
+        drop malformed steps and steps naming an agent that isn't in
+        ``available_agents``. It does NOT check contracts; that's the Plan
+        Validator's job downstream (``orchestrator.resolve_validated_plan``),
+        which is the actual safety gate and is the only thing that can
+        reject/replace a plan. Falls back to the keyword planner (which
+        still uses deterministic ``compose_plan`` routing) on any API,
+        parse, or sanitization failure — including an empty plan.
         """
         try:
-            from plateful.core.flow_router import compose_plan
             from plateful.core.observability import null_llm_trace, trace_llm_call
 
-            meal_plan = state.meal_plan if state else None
-            system_prompt = _build_system_prompt(available_agents, meal_plan=meal_plan or None)
+            system_prompt = _build_system_prompt(available_agents, state=state)
 
             # Get tracing context for LLM generation recording
             tracing = getattr(state, "_tracing", None) if state else None
@@ -225,6 +336,7 @@ class PlannerAgent:
                     system=system_prompt,
                     messages=[{"role": "user", "content": message}],
                     max_tokens=512,
+                    thinking={"type": "disabled"},
                 )
                 gen.update(
                     output=response.content[0].text,  # type: ignore[union-attr]
@@ -262,11 +374,15 @@ class PlannerAgent:
                     "plan": [],
                 }
 
-            plan = compose_plan(intent, available_agents, compound_flags=compound_flags)
+            plan = self._sanitize_plan(parsed.get("plan"), available_agents)
 
             if not plan:
-                # Unknown intent or all steps filtered out — fall back to keyword
-                # so we don't silently return nothing to the orchestrator.
+                # Empty, malformed, or entirely-unavailable-agent plan —
+                # fall back to keyword so we don't silently return nothing
+                # to the orchestrator. Note this is a parsing-layer
+                # concern, not the safety gate: a structurally valid but
+                # contract-violating plan is returned as-is and caught
+                # downstream by resolve_validated_plan.
                 return self._plan_keyword(message, available_agents, state=state)
 
             return {
@@ -279,6 +395,33 @@ class PlannerAgent:
         except Exception:
             logger.warning("llm_planner_fallback", reason="api_or_parse_error", exc_info=True)
             return self._plan_keyword(message, available_agents, state=state)
+
+    @staticmethod
+    def _sanitize_plan(raw_plan: Any, available_agents: set[str]) -> list[dict[str, Any]]:
+        """Structural sanitization only — no contract checks here.
+
+        Drops entries that aren't well-formed ``{"agent": str, ...}`` dicts
+        or that name an agent outside ``available_agents`` (covers both a
+        hallucinated agent name and one that's simply not registered in
+        this environment). Order is preserved; duplicates are left as-is
+        since a repeated step is a contract/validator concern, not a
+        parsing one.
+        """
+        if not isinstance(raw_plan, list):
+            return []
+
+        sanitized: list[dict[str, Any]] = []
+        for step in raw_plan:
+            if not isinstance(step, dict):
+                continue
+            agent_name = step.get("agent")
+            if not isinstance(agent_name, str) or agent_name not in available_agents:
+                continue
+            reason = step.get("reason")
+            sanitized.append(
+                {"agent": agent_name, "reason": reason if isinstance(reason, str) else agent_name}
+            )
+        return sanitized
 
     # --- Keyword planning (fallback) ------------------------------------------
 
@@ -314,9 +457,12 @@ class PlannerAgent:
         """Deterministic planning using keyword matching.
 
         Classifies intent + constraints + compound flags with simple regex /
-        keyword rules, then delegates plan composition to the same
-        ``compose_plan`` helper used by the LLM path. This keeps both modes
-        in lockstep: changing ``INTENT_FLOWS`` updates both planners at once.
+        keyword rules, then composes the plan via ``compose_plan`` (static
+        ``INTENT_FLOWS`` routing). This is the degraded-mode fallback for
+        when the LLM is unavailable or its plan doesn't survive
+        sanitization — unlike ``_plan_llm``, this path is always
+        contract-valid by construction (see
+        ``test_intent_flow_matches_contracts``).
         """
         from plateful.agents.intent import IntentAgent
         from plateful.core.flow_router import compose_plan

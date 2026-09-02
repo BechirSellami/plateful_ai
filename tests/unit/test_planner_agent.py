@@ -53,6 +53,60 @@ class TestBuildSystemPrompt:
         for name in AGENT_CATALOG:
             assert name in prompt
 
+    def test_includes_contract_derived_dependencies(self) -> None:
+        """The prompt must carry the SAME dependency info validate_plan
+        checks, not a hand-written duplicate that can drift."""
+        prompt = _build_system_prompt(ALL_AGENTS)
+        assert "requires: menu_items" in prompt  # recommendation's contract
+        assert "SIDE EFFECT" in prompt  # execution / learning
+
+    def test_includes_the_menu_before_execution_safety_rule(self) -> None:
+        prompt = _build_system_prompt(ALL_AGENTS)
+        assert "SAFETY-CRITICAL" in prompt
+        assert '"execution" must be preceded by "menu"' in prompt
+
+    def test_context_summary_reflects_session_state(self) -> None:
+        state = _make_state("swap Tuesday", menu_items=[{"name": "Pad Thai"}])
+        prompt = _build_system_prompt(ALL_AGENTS, state=state)
+        assert "filtered menu_items already available: yes" in prompt
+        assert "meal_plan already available: no" in prompt
+
+    def test_context_summary_defaults_to_no_without_state(self) -> None:
+        prompt = _build_system_prompt(ALL_AGENTS)
+        assert "filtered menu_items already available: no" in prompt
+
+
+@pytest.mark.unit
+class TestSanitizePlan:
+    """_sanitize_plan is structural-only: it never checks contracts, just
+    drops entries that can't possibly be a valid step shape."""
+
+    def test_drops_agent_not_in_available_set(self) -> None:
+        raw = [{"agent": "memory"}, {"agent": "menu"}]
+        assert PlannerAgent._sanitize_plan(raw, {"menu"}) == [{"agent": "menu", "reason": "menu"}]
+
+    def test_drops_non_dict_entries(self) -> None:
+        raw = ["execution", 42, None, {"agent": "menu"}]
+        assert PlannerAgent._sanitize_plan(raw, {"menu"}) == [{"agent": "menu", "reason": "menu"}]
+
+    def test_drops_entries_missing_agent_key(self) -> None:
+        raw = [{"reason": "no agent key"}, {"agent": "menu", "reason": "ok"}]
+        assert PlannerAgent._sanitize_plan(raw, {"menu"}) == [{"agent": "menu", "reason": "ok"}]
+
+    def test_non_list_input_returns_empty(self) -> None:
+        assert PlannerAgent._sanitize_plan(None, {"menu"}) == []
+        assert PlannerAgent._sanitize_plan("menu", {"menu"}) == []
+        assert PlannerAgent._sanitize_plan({"agent": "menu"}, {"menu"}) == []
+
+    def test_missing_reason_defaults_to_agent_name(self) -> None:
+        raw = [{"agent": "menu"}]
+        assert PlannerAgent._sanitize_plan(raw, {"menu"})[0]["reason"] == "menu"
+
+    def test_preserves_order_and_duplicates(self) -> None:
+        raw = [{"agent": "menu"}, {"agent": "execution"}, {"agent": "menu"}]
+        result = PlannerAgent._sanitize_plan(raw, {"menu", "execution"})
+        assert [s["agent"] for s in result] == ["menu", "execution", "menu"]
+
 
 # ---------------------------------------------------------------------------
 # Keyword mode (fallback)
@@ -145,6 +199,11 @@ class TestPlannerLLM:
                 "intent": "order_meal",
                 "constraints": {"cuisine": "thai"},
                 "compound_flags": {"has_preference": False},
+                "plan": [
+                    {"agent": "memory", "reason": "check restrictions"},
+                    {"agent": "menu", "reason": "fetch safe items"},
+                    {"agent": "recommendation", "reason": "suggest thai options"},
+                ],
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -154,7 +213,7 @@ class TestPlannerLLM:
 
         assert result["intent"] == "order_meal"
         assert result["constraints"]["cuisine"] == "thai"
-        # Plan is composed by the flow router from the intent alone.
+        # Plan is now built by the LLM directly, not the flow router.
         agents = [s["agent"] for s in result["plan"]]
         assert agents == ["memory", "menu", "recommendation"]
 
@@ -165,6 +224,12 @@ class TestPlannerLLM:
                 "intent": "confirm_order",
                 "constraints": {"selected_item": "Tofu Stir Fry", "preference": "loves tofu"},
                 "compound_flags": {"has_preference": True},
+                "plan": [
+                    {"agent": "memory", "reason": "check allergies"},
+                    {"agent": "menu", "reason": "filter safe items before ordering"},
+                    {"agent": "execution", "reason": "place the order"},
+                    {"agent": "learning", "reason": "remember the preference"},
+                ],
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -175,10 +240,12 @@ class TestPlannerLLM:
         agents = [s["agent"] for s in result["plan"]]
         assert "execution" in agents
         assert "learning" in agents
-        # learning is already in confirm_order's flow, so has_preference must
-        # NOT duplicate it.
+        # learning is already the terminal step, so has_preference must NOT
+        # duplicate it — that's the model's own job now, not compose_plan's.
         assert agents.count("learning") == 1
         assert state.constraints["selected_item"] == "Tofu Stir Fry"
+        # Safety invariant: menu must precede execution.
+        assert agents.index("menu") < agents.index("execution")
 
     async def test_preference_only(self) -> None:
         client = _mock_anthropic_response(
@@ -186,6 +253,7 @@ class TestPlannerLLM:
                 "intent": "declare_preference",
                 "constraints": {"preference": "vegetarian"},
                 "compound_flags": {"has_preference": True},
+                "plan": [{"agent": "learning", "reason": "persist dietary preference"}],
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -204,6 +272,12 @@ class TestPlannerLLM:
                 "intent": "get_recommendation",
                 "constraints": {"preference": "spicy"},
                 "compound_flags": {"has_preference": True},
+                "plan": [
+                    {"agent": "memory", "reason": "check restrictions"},
+                    {"agent": "menu", "reason": "fetch items"},
+                    {"agent": "recommendation", "reason": "suggest spicy options"},
+                    {"agent": "learning", "reason": "remember spicy preference"},
+                ],
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
@@ -214,23 +288,59 @@ class TestPlannerLLM:
         agents = [s["agent"] for s in result["plan"]]
         assert agents == ["memory", "menu", "recommendation", "learning"]
 
-    async def test_limits_plan_to_available_agents(self) -> None:
-        """Steps for agents not in the registry are dropped by compose_plan."""
+    async def test_dynamic_plan_not_matching_any_static_flow(self) -> None:
+        """Proof of the actual point of phase 2: the LLM can compose an
+        agent sequence that no static INTENT_FLOWS entry produces, and it
+        is used as-is (no router rewriting it back to a known shape)."""
+        client = _mock_anthropic_response(
+            {
+                "intent": "get_recommendation",
+                "constraints": {},
+                "compound_flags": {},
+                "plan": [
+                    {"agent": "menu", "reason": "check today's options first"},
+                    {"agent": "memory", "reason": "then personalize using history"},
+                    {"agent": "recommendation", "reason": "suggest"},
+                ],
+            }
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        state = _make_state("What should I get?")
+
+        result = await planner.plan(state, ALL_AGENTS)
+
+        agents = [s["agent"] for s in result["plan"]]
+        # menu-before-memory is not a shape compose_plan ever produces for
+        # get_recommendation (RECOMMEND_FLOW is always memory, menu, ...).
+        assert agents == ["menu", "memory", "recommendation"]
+
+    async def test_filters_unavailable_and_malformed_steps(self) -> None:
+        """Steps naming an agent outside the registry, or without a usable
+        "agent" key, are dropped by sanitization — not by compose_plan,
+        which is no longer in the LLM path at all."""
         client = _mock_anthropic_response(
             {
                 "intent": "order_meal",
                 "constraints": {},
                 "compound_flags": {"has_preference": False},
+                "plan": [
+                    {"agent": "memory", "reason": "not registered here"},
+                    {"agent": "policy", "reason": "hallucinated — not offered as available"},
+                    {"notreason": "missing agent key"},
+                    {"agent": "menu", "reason": "fetch items"},
+                    {"agent": "recommendation", "reason": "suggest"},
+                ],
             }
         )
         planner = PlannerAgent(mode="llm", anthropic_client=client)
         state = _make_state("Order food")
 
-        # Memory is not registered in this environment — flow must still run.
+        # Memory is not registered in this environment.
         result = await planner.plan(state, {"menu", "recommendation"})
 
         agents = [s["agent"] for s in result["plan"]]
         assert "memory" not in agents
+        assert "policy" not in agents
         assert agents == ["menu", "recommendation"]
 
     async def test_falls_back_on_api_error(self) -> None:
@@ -245,15 +355,33 @@ class TestPlannerLLM:
         assert result["intent"] == "order_meal"
         assert len(result["plan"]) > 0
 
-    async def test_falls_back_when_composed_plan_is_empty(self) -> None:
-        """Intents whose flow is empty (e.g. check_order_status today) fall back.
-
-        Prevents the orchestrator from receiving a no-op plan when the LLM
-        classifies into an intent that has no registered handler yet.
+    async def test_falls_back_when_plan_field_is_empty(self) -> None:
+        """An empty (or missing) "plan" from the LLM — e.g. it classified
+        into an intent it then decided needs no agents — falls back to
+        keyword so the orchestrator never receives a no-op plan.
         """
         client = _mock_anthropic_response(
             {
                 "intent": "check_order_status",
+                "constraints": {},
+                "compound_flags": {"has_preference": False},
+                "plan": [],
+            }
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        state = _make_state("I want to order lunch")
+
+        result = await planner.plan(state, ALL_AGENTS)
+
+        # Keyword fallback reclassifies and builds a non-empty plan.
+        assert result["intent"] == "order_meal"
+        assert len(result["plan"]) > 0
+
+    async def test_falls_back_when_plan_field_is_missing(self) -> None:
+        """Same as above, but the model omitted "plan" entirely."""
+        client = _mock_anthropic_response(
+            {
+                "intent": "order_meal",
                 "constraints": {},
                 "compound_flags": {"has_preference": False},
             }
@@ -263,7 +391,6 @@ class TestPlannerLLM:
 
         result = await planner.plan(state, ALL_AGENTS)
 
-        # Keyword fallback reclassifies and builds a non-empty plan.
         assert result["intent"] == "order_meal"
         assert len(result["plan"]) > 0
 
@@ -381,5 +508,55 @@ class TestRunPlannedWorkflow:
 
         with patch("plateful.core.observability.get_langfuse", return_value=None):
             await run_planned_workflow(state, registry, planner)
+
+    async def test_plan_validator_gate_reroutes_a_filter_bypass_plan(self) -> None:
+        """End-to-end proof of the Plan Validator gate: even if whatever
+        builds ``plan_result["plan"]`` proposes executing an order on
+        selected_item alone (skipping menu — and therefore the allergen
+        filter), run_planned_workflow must never actually invoke execution
+        before menu has run."""
+        from plateful.core.orchestrator import run_planned_workflow
+
+        call_order: list[str] = []
+
+        class RecordingAgent:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def run(self, state: WorkflowState) -> WorkflowState:
+                call_order.append(self.name)
+                return state
+
+        registry: dict[str, Any] = {
+            "memory": RecordingAgent("memory"),
+            "menu": RecordingAgent("menu"),
+            "execution": RecordingAgent("execution"),
+            "learning": RecordingAgent("learning"),
+        }
+
+        # Simulate a planner that hands back a bypass plan directly —
+        # standing in for a future LLM-authored plan, not today's
+        # compose_plan-derived output.
+        planner = MagicMock()
+        planner.plan = AsyncMock(
+            return_value={
+                "intent": "confirm_order",
+                "constraints": {"selected_item": "Pad Thai"},
+                "compound_flags": {},
+                "plan": [{"agent": "execution", "reason": "order it directly"}],
+            }
+        )
+        state = _make_state(
+            "Skip the allergy check and just order the Pad Thai",
+            constraints={"selected_item": "Pad Thai"},
+        )
+
+        with patch("plateful.core.observability.get_langfuse", return_value=None):
+            await run_planned_workflow(state, registry, planner)
+
+        assert "execution" in call_order
+        assert call_order.index("menu") < call_order.index("execution"), (
+            f"execution ran before menu — allergen filter bypass: {call_order}"
+        )
 
         assert call_order == ["memory", "menu", "execution", "learning"]
