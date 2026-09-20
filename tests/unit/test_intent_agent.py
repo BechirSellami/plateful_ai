@@ -109,29 +109,58 @@ class TestIntentAgentKeyword:
 
 def _mock_anthropic_response(payload: dict[str, Any]) -> AsyncMock:
     """Create a mock AsyncAnthropic client that returns *payload* as JSON."""
+
+    # Fake an Anthropic text block. This is a MagicMock because the production
+    # code only accesses ordinary attributes such as content[0].text.
     text_block = MagicMock()
     text_block.text = json.dumps(payload)
     text_block.type = "text"
 
+    # Reproduce the minimal shape of the Anthropic response consumed by
+    # IntentAgent._classify_llm().
     response = MagicMock()
     response.content = [text_block]
     response.stop_reason = "end_turn"
 
+    # Build a fake client with the same interface IntentAgent expects.
+    # When this client is injected into IntentAgent, self.anthropic_client
+    # refers to this mock instead of a real Anthropic client.
+    # Therefore the unchanged production call:
+    #     await self.anthropic_client.messages.create(...)
+    # invokes this AsyncMock and returns `response` without calling Anthropic.
+    #
+    # #response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
+    #             model=self.model,
+    #             system=INTENT_SYSTEM_PROMPT,
+    #             messages=[{"role": "user", "content": message}],
+    #             max_tokens=256,
+    #             thinking={"type": "disabled"},
+    #         )
+    # AsyncMock will accept the function args defined in the code. It won't use them though.
     client = AsyncMock()
-    client.messages.create = AsyncMock(return_value=response)
+    client.messages.create = AsyncMock(return_value=response)  #
     return client
 
 
 @pytest.mark.unit
 class TestIntentAgentLLM:
     async def test_llm_classifies_intent(self) -> None:
+        # Predetermine what the LLM "returns". This test does NOT test whether
+        # Claude can infer order_meal from the user message; it tests how
+        # IntentAgent handles a valid LLM response.
         client = _mock_anthropic_response({"intent": "order_meal", "constraints": {"budget": 30}})
         agent = IntentAgent(mode="llm", anthropic_client=client)
 
+        # Exercises the LLM path in run():
+        # run() -> _classify_llm() -> await client.messages.create() -> parse JSON -> update WorkflowState.
         result = await agent.run(_make_state("I'd like to order something under $30"))
 
+        # Verify that the parsed LLM output was written back to the workflow state.
         assert result.intent == "order_meal"
         assert result.constraints["budget"] == 30
+
+        # Verify that IntentAgent actually used and awaited the LLM client once,
+        # rather than obtaining the result through another path such as keyword mode.
         client.messages.create.assert_awaited_once()
 
     async def test_llm_extracts_multiple_constraints(self) -> None:

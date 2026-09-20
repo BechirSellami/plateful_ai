@@ -6,7 +6,6 @@ dist/
 build/
 .eggs/
 *.egg
-src/api/Bechir_test.py
 
 # Virtual environments
 .venv/
@@ -42,5 +41,5 @@ static/
 .DS_Store
 Thumbs.db
 
-# Deck material (kept locally, not tracked)
+# Deck content (kept locally, not tracked)
 Deck/

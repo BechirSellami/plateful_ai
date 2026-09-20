@@ -19,12 +19,14 @@ the model's plan is empty/unparseable after sanitization.
 from __future__ import annotations
 
 import json
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import anthropic
 import structlog
+from anthropic.types import MessageParam
 
 from plateful.core.agent_contracts import AGENT_CONTRACTS
+from plateful.core.conversation import bounded_history
 from plateful.core.workflow import WorkflowState
 
 logger = structlog.get_logger()
@@ -61,8 +63,9 @@ AGENT_CATALOG: dict[str, str] = {
 }
 
 PLANNER_SYSTEM_PROMPT = """You are the Planner for a corporate catering assistant.
-Given a user message, classify it into an intent, extract structured constraints, flag \
-compound signals, AND build the ordered execution plan yourself — a list of agent steps. \
+Given the conversation so far, classify the LATEST user message into an intent, extract \
+structured constraints, flag compound signals, AND build the ordered execution plan \
+yourself — a list of agent steps. \
 There is no separate router: you decide which agents run and in what order, subject to \
 the contract rules below. A Plan Validator checks your plan against these same contracts \
 before anything runs and replaces it with a safe deterministic fallback if it is invalid \
@@ -86,6 +89,16 @@ already available per CONTEXT. If not, insert the producing agent earlier in the
 3. "learning" (and any other post-action agent) must be the LAST step(s) in the plan.
 4. Only use agents from the list above. Keep plans minimal — do not include an agent \
 that has nothing to contribute to this specific request.
+
+CONVERSATION HISTORY vs CONTEXT:
+The message history is there so you understand what the user MEANS — resolve "it", \
+"the second one", "the other one", "instead", "same as before", and corrections to \
+earlier statements against what the assistant previously said (e.g. "the second one" \
+after a numbered recommendation list → put that item's name in ``selected_item``). \
+Only the LATEST user message is the request you're planning for; earlier turns are \
+background. CONTEXT below is the authoritative record of what the system actually has \
+right now — an item being mentioned earlier in the transcript does NOT mean it is \
+filtered, safe, or available. Apply the PLAN RULES using CONTEXT, never the transcript.
 
 CONTEXT — what's already available this turn, before your plan runs:
 {context_summary}
@@ -210,6 +223,7 @@ def _build_system_prompt(
     state: WorkflowState | None = None,
 ) -> str:
     """Build the planner system prompt with only the available agents."""
+    # Build descriptions via a generator expression
     descriptions = "\n".join(
         f"- **{name}**: {desc}\n  contract — {_contract_summary(name)}"
         for name, desc in AGENT_CATALOG.items()
@@ -306,6 +320,11 @@ class PlannerAgent:
     ) -> dict[str, Any]:
         """Classify the message AND build the ordered plan directly with Claude.
 
+        Sends a bounded window of ``state.messages`` (the session transcript)
+        so the model can resolve references like "the second one"; the
+        structured session state rendered into the system prompt remains
+        the authoritative signal for what prerequisites already exist.
+
         This method only does structural sanitization on the model's plan —
         drop malformed steps and steps naming an agent that isn't in
         ``available_agents``. It does NOT check contracts; that's the Plan
@@ -330,14 +349,22 @@ class PlannerAgent:
             else:
                 gen_ctx = null_llm_trace()
 
+            # Bounded multi-turn transcript for reference resolution. The
+            # structured CONTEXT in the system prompt stays authoritative.
+            history = bounded_history(state.messages) if state else []
+            if not history:
+                history = [{"role": "user", "content": message}]
+            api_messages = cast("list[MessageParam]", history)
+
             async with gen_ctx as gen:
                 response = await self.anthropic_client.messages.create(  # type: ignore[union-attr]
                     model=self.model,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": message}],
+                    messages=api_messages,
                     max_tokens=512,
                     thinking={"type": "disabled"},
                 )
+
                 gen.update(
                     output=response.content[0].text,  # type: ignore[union-attr]
                     usage_details={
@@ -354,6 +381,8 @@ class PlannerAgent:
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
+
+            # Parse response to json format
             parsed = json.loads(text)
 
             # Validate and sanitize
