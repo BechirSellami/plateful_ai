@@ -140,6 +140,76 @@ class TestExecutionAgent:
         assert result.order is not None
         assert result.order["items"][0]["name"] == "Tofu Stir Fry"
 
+    async def test_resolves_ordinal_against_recommendations(self) -> None:
+        """ "The 2nd one" orders the second card, even with no selected_item."""
+        agent = ExecutionAgent()
+        recs = [
+            {"name": "Grilled Chicken Bowl", "price_usd": 18.50},
+            {"name": "Salmon Poke Bowl", "price_usd": 24.00},
+            {"name": "Mediterranean Grain Bowl", "price_usd": 16.50},
+        ]
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            messages=[
+                {"role": "user", "content": "What do you recommend today?"},
+                {"role": "assistant", "content": "1. Grilled Chicken Bowl\n2. Salmon..."},
+                {"role": "user", "content": "I'll take the 2nd one"},
+            ],
+            menu_items=list(recs),
+            recommendations=recs,
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Salmon Poke Bowl"
+        assert result.order["total_usd"] == 24.00
+
+    async def test_ordinal_wins_when_planner_copies_the_phrase(self) -> None:
+        """selected_item="the 2nd one" must not fuzzy-match on "the"."""
+        agent = ExecutionAgent()
+        recs = [
+            {"name": "The Works Pizza", "price_usd": 15.00},
+            {"name": "Salmon Poke Bowl", "price_usd": 24.00},
+        ]
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "the 2nd one"},
+            messages=[{"role": "user", "content": "I'll take the 2nd one"}],
+            menu_items=list(recs),
+            recommendations=recs,
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Salmon Poke Bowl"
+
+    async def test_explicit_name_beats_ordinal(self) -> None:
+        agent = ExecutionAgent()
+        recs = [
+            {"name": "Grilled Chicken Bowl", "price_usd": 18.50},
+            {"name": "Salmon Poke Bowl", "price_usd": 24.00},
+        ]
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            constraints={"selected_item": "Grilled Chicken Bowl"},
+            messages=[{"role": "user", "content": "The chicken bowl — the 2nd one is too pricey"}],
+            menu_items=list(recs),
+            recommendations=recs,
+            policy_result={"passed": True},
+        )
+
+        result = await agent.run(state)
+
+        assert result.order is not None
+        assert result.order["items"][0]["name"] == "Grilled Chicken Bowl"
+
     async def test_handles_empty_items(self) -> None:
         agent = ExecutionAgent()
         state = WorkflowState(

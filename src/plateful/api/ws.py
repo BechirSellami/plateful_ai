@@ -77,15 +77,17 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 recommendations=list(session_recommendations),
             )
 
-            try:
-                # Attach observability trace
-                tracing = TracingContext.create(
-                    trace_id=state.trace_id,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                state._tracing = tracing  # type: ignore[attr-defined]
+            # Attach observability trace. The user message is the trace
+            # input; the rendered assistant turn becomes its output below.
+            tracing = TracingContext.create(
+                trace_id=state.trace_id,
+                user_id=user_id,
+                session_id=session_id,
+                input_data=message,
+            )
+            state._tracing = tracing  # type: ignore[attr-defined]
 
+            try:
                 # Phase 1: plan
                 await ws.send_json({"type": "step", "step": "plan", "agent": "planner"})
                 with trace_agent_step(tracing, agent_name="planner", step_name="plan") as plan_span:
@@ -112,12 +114,11 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                         "\u2022 Planning meals for the week\n\n"
                         "What would you like to eat today?"
                     )
-                    tracing.flush()
                 else:
                     # Phase 1.5: Plan Validator gate — same contract check
                     # and deterministic fallback as the HTTP/CLI path.
                     with trace_agent_step(
-                        tracing, agent_name="planner", step_name="validate_plan"
+                        tracing, agent_name="plan_validator", step_name="validate_plan"
                     ) as validate_span:
                         flow_steps, validation, used_fallback = resolve_validated_plan(
                             plan_result, state, available
@@ -160,7 +161,6 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                             audit_fn=_make_combined(ws, _db_audit),
                         )
                         await db_session.commit()
-                    tracing.flush()
 
                 # Build result payload.
                 # When an order was placed, recommendations are stale
@@ -199,7 +199,9 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     session_menu_items = list(state.menu_items)
                 if state.recommendations:
                     session_recommendations = list(state.recommendations)
-                _record_turn(message, render_assistant_turn(state))
+                assistant_turn = render_assistant_turn(state)
+                _record_turn(message, assistant_turn)
+                tracing.flush(output=assistant_turn)
 
                 await ws.send_json(result)
 
@@ -208,6 +210,7 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                 # Still record the exchange so the transcript keeps
                 # alternating user/assistant turns.
                 _record_turn(message, ERROR_ASSISTANT_TURN)
+                tracing.flush(output=ERROR_ASSISTANT_TURN)
                 await ws.send_json({"type": "error", "detail": "Pipeline error"})
 
     except WebSocketDisconnect:

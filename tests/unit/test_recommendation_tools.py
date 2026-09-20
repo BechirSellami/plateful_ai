@@ -1,6 +1,12 @@
+from typing import Any, ClassVar
+
 import pytest
 
-from plateful.tools.recommendation_tools import format_recommendations_prompt, rank_items
+from plateful.tools.recommendation_tools import (
+    align_recommendations_to_text,
+    format_recommendations_prompt,
+    rank_items,
+)
 
 SAMPLE_ITEMS = [
     {
@@ -188,3 +194,59 @@ class TestFormatRecommendationsPrompt:
         ]
         prompt = format_recommendations_prompt(items, {}, {})
         assert "75.0" in prompt
+
+
+@pytest.mark.unit
+class TestAlignRecommendationsToText:
+    CANDIDATES: ClassVar[list[dict[str, Any]]] = [
+        {"name": "Grilled Chicken Bowl", "score": 70},
+        {"name": "Salmon Poke Bowl", "score": 70},
+        {"name": "Mediterranean Grain Bowl", "score": 70},
+        {"name": "Tofu Stir Fry", "score": 60},
+        {"name": "Pasta Carbonara", "score": 50},
+    ]
+
+    def test_follows_llm_numbering(self) -> None:
+        text = (
+            "Here are three options:\n\n"
+            "1. **Salmon Poke Bowl** — $24.0 — bold flavours.\n\n"
+            "2. **Grilled Chicken Bowl** — $18.5 — protein-packed.\n\n"
+            "3. **Mediterranean Grain Bowl** — $16.5 — light."
+        )
+        out = align_recommendations_to_text(self.CANDIDATES, text)
+        assert [i["name"] for i in out] == [
+            "Salmon Poke Bowl",
+            "Grilled Chicken Bowl",
+            "Mediterranean Grain Bowl",
+        ]
+
+    def test_llm_may_pick_outside_deterministic_top_3(self) -> None:
+        text = "1. Tofu Stir Fry\n2. Pasta Carbonara\n3. Salmon Poke Bowl"
+        out = align_recommendations_to_text(self.CANDIDATES, text)
+        assert [i["name"] for i in out] == [
+            "Tofu Stir Fry",
+            "Pasta Carbonara",
+            "Salmon Poke Bowl",
+        ]
+
+    def test_fills_unmentioned_slots_in_scored_order(self) -> None:
+        text = "I'd go with the Mediterranean Grain Bowl today."
+        out = align_recommendations_to_text(self.CANDIDATES, text)
+        assert [i["name"] for i in out] == [
+            "Mediterranean Grain Bowl",
+            "Grilled Chicken Bowl",
+            "Salmon Poke Bowl",
+        ]
+
+    def test_keeps_scored_order_when_nothing_matches(self) -> None:
+        out = align_recommendations_to_text(self.CANDIDATES, "Enjoy your lunch!")
+        assert [i["name"] for i in out] == [
+            "Grilled Chicken Bowl",
+            "Salmon Poke Bowl",
+            "Mediterranean Grain Bowl",
+        ]
+
+    def test_case_insensitive_and_respects_limit(self) -> None:
+        text = "tofu stir fry, then SALMON POKE BOWL"
+        out = align_recommendations_to_text(self.CANDIDATES, text, limit=2)
+        assert [i["name"] for i in out] == ["Tofu Stir Fry", "Salmon Poke Bowl"]

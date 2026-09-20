@@ -13,7 +13,11 @@ import structlog
 
 from plateful.core.config import settings
 from plateful.core.workflow import WorkflowState
-from plateful.tools.recommendation_tools import format_recommendations_prompt, rank_items
+from plateful.tools.recommendation_tools import (
+    align_recommendations_to_text,
+    format_recommendations_prompt,
+    rank_items,
+)
 
 logger = structlog.get_logger()
 
@@ -27,6 +31,8 @@ that match what they asked for.
 - Stored preferences and past orders are secondary context — use them to break ties \
 or add colour, but NEVER override what the user explicitly asked for.
 - Always recommend exactly 3 items (or fewer if less are available)
+- Present them as a numbered list (1., 2., 3.), best match first, using each \
+item's exact name as given — the numbering is what the user will refer back to
 - Explain briefly why each item is a good match
 - Be concise, warm, and helpful
 - If the user has dietary restrictions or allergies, acknowledge them
@@ -69,8 +75,12 @@ class RecommendationAgent:
         # Build allergen warning if the user asked for something unsafe
         allergen_warning = self._build_allergen_warning(state)
 
-        # Stage 2: LLM recommendation (if client available)
+        # Stage 2: LLM recommendation (if client available). The LLM's
+        # ranking is authoritative: the cards and the transcript must show
+        # the items in the order the prose numbers them, otherwise "the
+        # second one" means different things on screen and in the plan.
         recommendation_text = None
+        recommendations = top_items[:3]
         if self._client and settings.anthropic_api_key:
             recommendation_text = await self._generate_llm_recommendation(
                 top_items,
@@ -80,6 +90,8 @@ class RecommendationAgent:
                 state=state,
                 allergen_warning=allergen_warning,
             )
+            if recommendation_text:
+                recommendations = align_recommendations_to_text(top_items, recommendation_text)
 
         # If no LLM, use deterministic fallback
         if not recommendation_text:
@@ -87,7 +99,7 @@ class RecommendationAgent:
             if allergen_warning:
                 recommendation_text = allergen_warning + "\n\n" + recommendation_text
 
-        state.recommendations = top_items[:3]
+        state.recommendations = recommendations
         state.recommendation_text = recommendation_text
         state.last_result = recommendation_text
 
@@ -95,7 +107,7 @@ class RecommendationAgent:
             "recommendation_agent_complete",
             trace_id=state.trace_id,
             items_ranked=len(ranked),
-            top_3=[item["name"] for item in top_items[:3]],
+            top_3=[item["name"] for item in recommendations],
             llm_used=recommendation_text is not None and self._client is not None,
         )
 
@@ -167,7 +179,8 @@ class RecommendationAgent:
                     model=model,
                     system=RECOMMENDATION_SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=512,
+                    # 512 was cutting off the third item mid-sentence.
+                    max_tokens=1024,
                 )
                 gen.update(
                     output=response.content[0].text

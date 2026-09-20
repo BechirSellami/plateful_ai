@@ -9,6 +9,7 @@ Trace hierarchy per user message::
     Trace (root span "chat")
       ├── Span "planner"
       │     └── Generation "planner.llm" (token usage)
+      ├── Span "plan_validator" (contract check on the proposed plan)
       ├── Span "memory"
       ├── Span "menu"
       ├── Span "recommendation"
@@ -122,12 +123,22 @@ class TracingContext:
     In Langfuse v4, traces are implicit — created when the first
     observation is started with a ``trace_context``. We create a root
     span named "chat" as the parent of all agent step spans.
+
+    The trace-level Input/Output shown in the Langfuse UI are taken from
+    the root observation, so the user message goes on the root span as
+    ``input`` at creation and the assistant's reply is attached as
+    ``output`` when the context is ended. ``user_id`` / ``session_id`` are
+    propagated as trace attributes (not just metadata) so Langfuse groups
+    a conversation's turns under one session.
     """
 
-    def __init__(self, *, client: Any, root_span: Any) -> None:
+    def __init__(self, *, client: Any, root_span: Any, propagation: Any = None) -> None:
         self._client = client
         self._root_span = root_span  # LangfuseSpan or _NullSpan
         self._trace_id = root_span.trace_id if hasattr(root_span, "trace_id") else ""
+        # Entered ``propagate_attributes`` context manager, exited in ``end``.
+        self._propagation = propagation
+        self._ended = False
 
     @classmethod
     def create(
@@ -137,28 +148,37 @@ class TracingContext:
         user_id: str,
         session_id: str,
         name: str = "chat",
+        input_data: Any = None,
     ) -> TracingContext:
         """Create a tracing context. Returns a null context if Langfuse is off."""
         client = get_langfuse()
         if client is None:
             return cls(client=None, root_span=_NULL_SPAN)
 
+        from langfuse import propagate_attributes
         from langfuse.types import TraceContext
 
         lf_trace_id = _to_trace_id(trace_id)
         tc = TraceContext(trace_id=lf_trace_id)
 
+        # Attributes propagate through the OTel context to every span
+        # started while this context is active — the root span below and
+        # all children created via ``span()`` / ``generation()``.
+        propagation = propagate_attributes(user_id=user_id, session_id=session_id)
+        propagation.__enter__()
+
         root_span = client.start_observation(
             trace_context=tc,
             name=name,
             as_type="span",
+            input=input_data,
             metadata={
                 "user_id": user_id,
                 "session_id": session_id,
                 "workflow_trace_id": trace_id,
             },
         )
-        return cls(client=client, root_span=root_span)
+        return cls(client=client, root_span=root_span, propagation=propagation)
 
     @property
     def is_active(self) -> bool:
@@ -194,14 +214,20 @@ class TracingContext:
 
         self._root_span.score_trace(name=name, value=value, comment=comment)
 
-    def end(self) -> None:
-        """End the root span."""
-        if self.is_active:
-            self._root_span.end()
+    def end(self, *, output: Any = None) -> None:
+        """End the root span, recording ``output`` as the trace output."""
+        if not self.is_active or self._ended:
+            return
+        self._ended = True
+        if output is not None:
+            self._root_span.update(output=output)
+        self._root_span.end()
+        if self._propagation is not None:
+            self._propagation.__exit__(None, None, None)
 
-    def flush(self) -> None:
+    def flush(self, *, output: Any = None) -> None:
         """End root span and flush pending events to Langfuse."""
-        self.end()
+        self.end(output=output)
         if self._client is not None:
             self._client.flush()
 

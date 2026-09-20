@@ -5,10 +5,11 @@ If the policy agent flagged requires_approval, the order is placed in
 pending_approval status instead of submitted.
 """
 
-from typing import Any
+from typing import Any, ClassVar
 
 import structlog
 
+from plateful.core.conversation import resolve_ordinal_reference
 from plateful.core.workflow import WorkflowState
 from plateful.tools.execution_tools import send_notification, submit_order
 
@@ -135,12 +136,20 @@ class ExecutionAgent:
 
         return state
 
+    # Words too generic to identify a dish; without this, a phrase like
+    # "the 2nd one" would fuzzy-match any item containing "the".
+    _FUZZY_STOPWORDS: ClassVar[frozenset[str]] = frozenset(
+        {"the", "one", "and", "with", "that", "this", "please", "option", "item"}
+    )
+
     def _resolve_order_items(self, state: WorkflowState) -> list[dict[str, Any]]:
         """Determine which item(s) to order.
 
         Resolution order:
         1. If ``selected_item`` is in constraints, match it against menu_items.
-        2. Otherwise fall back to the top recommendation, then first menu item.
+        2. If the user's message points at a position in the recommendation
+           list they were just shown ("the 2nd one", "#3"), take that entry.
+        3. Otherwise fall back to the top recommendation, then first menu item.
         """
         selected = state.constraints.get("selected_item", "")
         search_pool = state.menu_items or []
@@ -151,11 +160,29 @@ class ExecutionAgent:
                 if selected_lower in item.get("name", "").lower():
                     return [item]
             # Fuzzy: check if any word from selected matches an item name
-            selected_words = {w for w in selected_lower.split() if len(w) > 2}
+            selected_words = {
+                w for w in selected_lower.split() if len(w) > 2 and w not in self._FUZZY_STOPWORDS
+            }
             for item in search_pool:
                 item_lower = item.get("name", "").lower()
                 if any(w in item_lower for w in selected_words):
                     return [item]
+
+        # Ordinal reference against the recommendations the user just saw.
+        # Deterministic, so it holds even when the planner failed to turn
+        # "the second one" into an item name.
+        if state.recommendations and state.messages:
+            user_message = state.messages[-1].get("content", "")
+            index = resolve_ordinal_reference(user_message, len(state.recommendations))
+            if index is not None:
+                logger.info(
+                    "execution_agent_ordinal_resolved",
+                    trace_id=state.trace_id,
+                    index=index,
+                    selected_item=selected or None,
+                    item=state.recommendations[index].get("name"),
+                )
+                return [state.recommendations[index]]
 
         # Fallback: top recommendation or first menu item
         if state.recommendations:

@@ -5,6 +5,7 @@ from typing import Any
 import structlog
 
 from plateful.core.agent_contracts import ValidationResult, state_to_initial_outputs, validate_plan
+from plateful.core.conversation import render_assistant_turn
 from plateful.core.flow_router import compose_plan, get_flow_for_intent
 from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.workflow import BaseAgent, WorkflowState
@@ -155,7 +156,7 @@ async def run_workflow(
         tracing_init: TracingContext | None = getattr(state, "_tracing", None)
         if tracing_init is not None and tracing_init.is_active:
             with trace_agent_step(
-                tracing_init, agent_name="planner", step_name="validate_plan"
+                tracing_init, agent_name="plan_validator", step_name="validate_plan"
             ) as val_span:
                 val_span.update(
                     input={"steps": [s.get("agent") for s in flow_def["steps"]]},
@@ -322,11 +323,16 @@ async def run_planned_workflow(
     of agent steps (handles compound intents like preference + order).
     Phase 2 — Execute each step in the plan sequentially.
     """
-    # Create observability trace for this request
+    user_message = state.messages[-1].get("content", "") if state.messages else ""
+
+    # Create observability trace for this request. The user message is
+    # the trace input; the rendered assistant turn is attached as output
+    # on flush.
     tracing = TracingContext.create(
         trace_id=state.trace_id,
         user_id=state.user_id,
         session_id=state.session_id,
+        input_data=user_message,
     )
     state._tracing = tracing  # type: ignore[attr-defined]
 
@@ -336,9 +342,7 @@ async def run_planned_workflow(
             available = {k for k in agent_registry if k != "orchestrator"}
             plan_result = await planner.plan(state, available)
             plan_span.update(
-                input={
-                    "user_message": state.messages[-1].get("content", "") if state.messages else ""
-                },
+                input={"user_message": user_message},
                 output={
                     "intent": plan_result.get("intent"),
                     "constraints": plan_result.get("constraints", {}),
@@ -363,7 +367,7 @@ async def run_planned_workflow(
         # Phase 1.5: Plan Validator gate — reject/replace an unsafe or
         # contract-violating plan before it ever reaches the executor.
         with trace_agent_step(
-            tracing, agent_name="planner", step_name="validate_plan"
+            tracing, agent_name="plan_validator", step_name="validate_plan"
         ) as validate_span:
             flow_steps, validation, used_fallback = resolve_validated_plan(
                 plan_result, state, available
@@ -382,7 +386,7 @@ async def run_planned_workflow(
 
         state = await run_workflow(flow_def, state, agent_registry, audit_fn=audit_fn)
     finally:
-        tracing.flush()
+        tracing.flush(output=render_assistant_turn(state))
 
     return state
 
