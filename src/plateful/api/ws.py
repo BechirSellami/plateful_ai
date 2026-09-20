@@ -19,6 +19,11 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from plateful.agents.planner import PlannerAgent
 from plateful.core.audit import make_audit_fn
+from plateful.core.conversation import (
+    ERROR_ASSISTANT_TURN,
+    MAX_HISTORY_MESSAGES,
+    render_assistant_turn,
+)
 from plateful.core.observability import TracingContext, trace_agent_step
 from plateful.core.orchestrator import resolve_validated_plan, run_workflow
 from plateful.core.workflow import WorkflowState
@@ -31,10 +36,22 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
     """Handle a single WebSocket chat session."""
     await ws.accept()
 
-    # Session-level state that persists across turns
+    # Session-level state that persists across turns.
+    # ``session_messages`` is the linguistic layer (what was said, so the
+    # planner can resolve "the second one"); the other three are the
+    # authoritative structured layer (what the system actually has).
+    session_messages: list[dict[str, str]] = []
     session_meal_plan: dict[str, dict[str, Any]] = {}
     session_menu_items: list[dict[str, Any]] = []
     session_recommendations: list[dict[str, Any]] = []
+
+    def _record_turn(user_text: str, assistant_text: str) -> None:
+        nonlocal session_messages
+        session_messages = [
+            *session_messages,
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": assistant_text},
+        ][-MAX_HISTORY_MESSAGES:]
 
     try:
         while True:
@@ -50,10 +67,11 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
 
             # Build state, carrying forward context from prior turns so
             # order_meal flows can resolve items seen during recommendation.
+            # The current user message is always last in ``messages``.
             state = WorkflowState(
                 user_id=user_id,
                 session_id=session_id,
-                messages=[{"role": "user", "content": message}],
+                messages=[*session_messages, {"role": "user", "content": message}],
                 meal_plan=dict(session_meal_plan),
                 menu_items=list(session_menu_items),
                 recommendations=list(session_recommendations),
@@ -181,11 +199,15 @@ async def websocket_chat(ws: WebSocket, registry: dict[str, Any], planner: Plann
                     session_menu_items = list(state.menu_items)
                 if state.recommendations:
                     session_recommendations = list(state.recommendations)
+                _record_turn(message, render_assistant_turn(state))
 
                 await ws.send_json(result)
 
             except Exception:
                 logger.exception("ws_pipeline_error")
+                # Still record the exchange so the transcript keeps
+                # alternating user/assistant turns.
+                _record_turn(message, ERROR_ASSISTANT_TURN)
                 await ws.send_json({"type": "error", "detail": "Pipeline error"})
 
     except WebSocketDisconnect:

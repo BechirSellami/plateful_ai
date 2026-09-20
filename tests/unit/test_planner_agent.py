@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from plateful.agents.planner import AGENT_CATALOG, PlannerAgent, _build_system_prompt
+from plateful.core.conversation import MAX_HISTORY_MESSAGES
 from plateful.core.workflow import WorkflowState
 
 ALL_AGENTS = {"memory", "menu", "recommendation", "execution", "learning"}
@@ -74,6 +75,12 @@ class TestBuildSystemPrompt:
     def test_context_summary_defaults_to_no_without_state(self) -> None:
         prompt = _build_system_prompt(ALL_AGENTS)
         assert "filtered menu_items already available: no" in prompt
+
+    def test_explains_transcript_vs_structured_context(self) -> None:
+        prompt = _build_system_prompt(ALL_AGENTS)
+        assert "CONVERSATION HISTORY vs CONTEXT" in prompt
+        assert "LATEST user message" in prompt
+        assert "Apply the PLAN RULES using CONTEXT, never the transcript" in prompt
 
 
 @pytest.mark.unit
@@ -342,6 +349,67 @@ class TestPlannerLLM:
         assert "memory" not in agents
         assert "policy" not in agents
         assert agents == ["menu", "recommendation"]
+
+    async def test_single_turn_sends_only_current_message(self) -> None:
+        client = _mock_anthropic_response(
+            {"intent": "get_recommendation", "constraints": {}, "plan": [{"agent": "menu"}]}
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+
+        await planner.plan(_make_state("what's good?"), ALL_AGENTS)
+
+        sent = client.messages.create.call_args.kwargs["messages"]
+        assert sent == [{"role": "user", "content": "what's good?"}]
+
+    async def test_multi_turn_history_is_passed_to_claude(self) -> None:
+        """The planner sees prior turns so it can resolve 'the second one'."""
+        client = _mock_anthropic_response(
+            {
+                "intent": "confirm_order",
+                "constraints": {"selected_item": "Chicken Katsu"},
+                "plan": [{"agent": "execution", "reason": "order it"}],
+            }
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        history = [
+            {"role": "user", "content": "what do you recommend?"},
+            {"role": "assistant", "content": "1. **Pad Thai**\n2. **Chicken Katsu**"},
+            {"role": "user", "content": "I'll take the second one"},
+        ]
+        state = WorkflowState(
+            user_id="emp_123",
+            session_id="s",
+            messages=history,
+            recommendations=[{"name": "Pad Thai"}, {"name": "Chicken Katsu"}],
+        )
+
+        result = await planner.plan(state, ALL_AGENTS)
+
+        sent = client.messages.create.call_args.kwargs["messages"]
+        assert sent == history
+        assert result["constraints"]["selected_item"] == "Chicken Katsu"
+        # Structured context is still rendered into the system prompt.
+        system = client.messages.create.call_args.kwargs["system"]
+        assert "recommendations already available: yes" in system
+
+    async def test_history_is_bounded(self) -> None:
+        client = _mock_anthropic_response(
+            {"intent": "get_recommendation", "constraints": {}, "plan": [{"agent": "menu"}]}
+        )
+        planner = PlannerAgent(mode="llm", anthropic_client=client)
+        history: list[dict[str, str]] = []
+        for i in range(60):
+            history.append({"role": "user", "content": f"u{i}"})
+            history.append({"role": "assistant", "content": f"a{i}"})
+        history.append({"role": "user", "content": "latest"})
+        state = WorkflowState(user_id="emp_123", session_id="s", messages=history)
+
+        await planner.plan(state, ALL_AGENTS)
+
+        sent = client.messages.create.call_args.kwargs["messages"]
+        assert len(sent) <= MAX_HISTORY_MESSAGES
+        assert sent[0]["role"] == "user"
+        assert sent[-1] == {"role": "user", "content": "latest"}
 
     async def test_falls_back_on_api_error(self) -> None:
         client = AsyncMock()
