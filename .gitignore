@@ -6,6 +6,7 @@ dist/
 build/
 .eggs/
 *.egg
+src/api/Bechir_test.py
 
 # Virtual environments
 .venv/
@@ -41,7 +42,5 @@ static/
 .DS_Store
 Thumbs.db
 
-# Personal interview-prep notes (kept locally, not tracked)
-/docs/Demo_cheatsheet.md
-/docs/Demo_reference.md
-/plateful_ai_interview_playbook_structure.md
+# Deck material (kept locally, not tracked)
+Deck/
