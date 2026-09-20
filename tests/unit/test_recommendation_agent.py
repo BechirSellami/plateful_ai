@@ -148,6 +148,38 @@ class TestRecommendationAgentWithLLM:
         assert "Grilled Chicken Bowl" in str(result.last_result)
         mock_client.messages.create.assert_awaited_once()
 
+    async def test_cards_follow_llm_order(self) -> None:
+        """state.recommendations must match the order the prose numbers
+        items in — the cards and the transcript are both built from it."""
+        mock_client = AsyncMock()
+        mock_block = MagicMock()
+        mock_block.type = "text"
+        mock_block.text = (
+            "1. **Tofu Stir Fry** — light and fresh.\n"
+            "2. **Pasta Carbonara** — comfort food.\n"
+            "3. **Grilled Chicken Bowl** — protein-packed."
+        )
+        mock_response = MagicMock()
+        mock_response.content = [mock_block]
+        mock_client.messages.create.return_value = mock_response
+
+        agent = RecommendationAgent(anthropic_client=mock_client)
+
+        with patch("plateful.agents.recommendation.settings") as mock_settings:
+            mock_settings.anthropic_api_key = "sk-test"
+            state = WorkflowState(
+                user_id="emp_123",
+                session_id="s",
+                menu_items=SAMPLE_MENU_ITEMS,
+            )
+            result = await agent.run(state)
+
+        assert [r["name"] for r in result.recommendations] == [
+            "Tofu Stir Fry",
+            "Pasta Carbonara",
+            "Grilled Chicken Bowl",
+        ]
+
     async def test_falls_back_on_llm_error(self) -> None:
         mock_client = AsyncMock()
         mock_client.messages.create.side_effect = Exception("API error")

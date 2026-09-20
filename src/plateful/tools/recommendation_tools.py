@@ -107,6 +107,36 @@ def rank_items(
     return scored
 
 
+def align_recommendations_to_text(
+    candidates: list[dict[str, Any]],
+    text: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Order ``candidates`` the way the LLM presented them in ``text``.
+
+    The cards the user sees and the transcript the planner reads are both
+    built from this list, so it must match the prose: "the second one"
+    has to mean the item the assistant listed second. Items named in the
+    text come first, in order of first mention; any remaining slots up to
+    ``limit`` are filled from ``candidates`` in their original (scored)
+    order. If the text names none of them, the scored order is kept.
+    """
+    lowered = text.lower()
+    mentioned = sorted(
+        (
+            (pos, item)
+            for item in candidates
+            if (name := str(item.get("name", "")).lower()) and (pos := lowered.find(name)) != -1
+        ),
+        key=lambda pair: pair[0],
+    )
+    ordered = [item for _, item in mentioned]
+    seen = {id(item) for item in ordered}
+    ordered.extend(item for item in candidates if id(item) not in seen)
+    return ordered[:limit]
+
+
 def format_recommendations_prompt(
     items: list[dict[str, Any]],
     profile: dict[str, Any],
@@ -157,5 +187,6 @@ User profile (stored preferences — secondary to current request):{profile_text
 {constraints_text}{allergen_text}
 
 Prioritise items that match the user's current request. Use stored preferences \
-only as tie-breakers or extra context. Pick the top 3 items and explain briefly \
+only as tie-breakers or extra context. Pick the top 3 items, best first, as a \
+numbered list (1., 2., 3.) using each item's exact name, and explain briefly \
 why each is a good match. Be concise and friendly."""
