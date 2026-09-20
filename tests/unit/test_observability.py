@@ -128,6 +128,39 @@ class TestTracingContext:
             ctx = TracingContext.create(trace_id="t1", user_id="u1", session_id="s1")
             assert ctx.is_active
 
+    def test_create_sets_root_input_and_propagates_user_session(self) -> None:
+        mock_client = MagicMock()
+        mock_root_span = MagicMock()
+        mock_client.start_observation.return_value = mock_root_span
+        mock_langfuse = MagicMock()
+        propagation = MagicMock()
+        mock_langfuse.propagate_attributes.return_value = propagation
+
+        with (
+            patch.dict("sys.modules", {"langfuse": mock_langfuse, "langfuse.types": MagicMock()}),
+            patch("plateful.core.observability.get_langfuse", return_value=mock_client),
+        ):
+            ctx = TracingContext.create(
+                trace_id="t1", user_id="u1", session_id="s1", input_data="hello"
+            )
+
+        mock_langfuse.propagate_attributes.assert_called_once_with(user_id="u1", session_id="s1")
+        propagation.__enter__.assert_called_once()
+        assert mock_client.start_observation.call_args.kwargs["input"] == "hello"
+
+        ctx.flush(output="hi there")
+        mock_root_span.update.assert_called_once_with(output="hi there")
+        mock_root_span.end.assert_called_once()
+        propagation.__exit__.assert_called_once_with(None, None, None)
+
+    def test_end_is_idempotent(self) -> None:
+        mock_root_span = MagicMock()
+        ctx = TracingContext(client=MagicMock(), root_span=mock_root_span)
+        ctx.end(output="x")
+        ctx.end(output="y")
+        mock_root_span.end.assert_called_once()
+        mock_root_span.update.assert_called_once_with(output="x")
+
     def test_span_calls_start_observation_on_root(self) -> None:
         mock_root_span = MagicMock()
         mock_child_span = MagicMock()
